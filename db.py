@@ -2,7 +2,7 @@ import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-DATABASE_URL = f"mysql+pymysql://{os.getenv('MYSQLUSER')}:{os.getenv('MYSQLPASSWORD')}@{os.getenv('MYSQLHOST')}:{os.getenv('MYSQLPORT')}/{os.getenv('MYSQLDATABASE')}"
+DATABASE_URL = "mysql+pymysql://root:TpNHXpAmCzHPlBSZCdKhpDzHukyUSfYK@kodama.proxy.rlwy.net:57775/railway"
 
 engine = create_engine(DATABASE_URL)
 
