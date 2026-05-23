@@ -403,13 +403,13 @@ async def upload_document(
     audio_url = ""
 
     if audio_path != "":
-        audio_url = f"http://formsahayak-backend.onrender.com/{audio_path.replace(chr(92), '/')}"
+        audio_url = f"https://formsahayak-backend.onrender.com/{audio_path.replace(chr(92), '/')}"
 
     return {
         "message": "Uploaded & processed successfully",
         "guidance": guidance_text,
         "audio_file": audio_url,
-        "pdf_file": f"http://formsahayak-backend.onrender.com/{pdf_path.replace(chr(92), '/')}"
+        "pdf_file": f"https://formsahayak-backend.onrender.com/{pdf_path.replace(chr(92), '/')}"
     }
 
 # ---------------- PROFILE API ----------------
@@ -427,7 +427,7 @@ def get_profile(email: str):
     profile_image_url = ""
 
     if user.profile_image:
-        profile_image_url = f"http://formsahayak-backend.onrender.com/{user.profile_image.replace(chr(92), '/')}"
+        profile_image_url = f"https://formsahayak-backend.onrender.com/{user.profile_image.replace(chr(92), '/')}"
 
     return {
         "name": user.name,
@@ -475,7 +475,7 @@ async def update_profile(
     profile_image_url = ""
 
     if image_path:
-        profile_image_url = f"http://formsahayak-backend.onrender.com/{image_path.replace(chr(92), '/')}"
+        profile_image_url = f"https://formsahayak-backend.onrender.com/{image_path.replace(chr(92), '/')}"
 
     return {
         "message": "Profile updated successfully",
@@ -500,15 +500,17 @@ def get_history(email: str):
         audio_url = ""
 
         if doc.audio_path:
-            audio_url = f"http://formsahayak-backend.onrender.com/{doc.audio_path.replace(chr(92), '/')}"
+            audio_url = f"https://formsahayak-backend.onrender.com/{doc.audio_path.replace(chr(92), '/')}"
 
         history.append({
-            "id": doc.id,
-            "file_name": doc.file_name,
-            "guidance_text": doc.guidance_text,
-            "audio_path": audio_url,
-            "created_at": str(doc.created_at)
-        })
+        "id": doc.id,
+        "file_name": doc.file_name,
+        "file_url": f"https://formsahayak-backend.onrender.com/uploads/{doc.file_name}",
+        "extracted_text": doc.extracted_text,
+        "guidance_text": doc.guidance_text,
+        "audio_path": audio_url,
+        "created_at": str(doc.created_at)
+    })
 
     db.close()
 
@@ -558,12 +560,12 @@ def get_form_details(doc_id: int):
     if not doc:
         raise HTTPException(status_code=404, detail="Form not found")
 
-    file_url = f"http://formsahayak-backend.onrender.com/uploads/{doc.file_name}"
+    file_url = f"https://formsahayak-backend.onrender.com/uploads/{doc.file_name}"
 
     audio_url = ""
 
     if doc.audio_path:
-        audio_url = f"http://formsahayak-backend.onrender.com/{doc.audio_path.replace(chr(92), '/')}"
+        audio_url = f"https://formsahayak-backend.onrender.com/{doc.audio_path.replace(chr(92), '/')}"
 
     db.close()
 
