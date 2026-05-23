@@ -51,4 +51,3 @@ python-magic==0.4.27
 
 reportlab==4.4.3
 pytz==2025.2
-python-dotenv==1.0.1
