@@ -41,11 +41,7 @@ reportlab==4.2.2
 pytz==2025.2
 
 
-
-easyocr==1.7.2
 gTTS==2.5.4
 python-dotenv==1.1.1
 groq==0.31.0
-
-torch==2.2.2
-torchvision==0.17.2
+pytesseract==0.3.13
