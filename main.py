@@ -5,7 +5,6 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.staticfiles import StaticFiles
 from gtts import gTTS
 from pydantic import BaseModel, EmailStr
-import easyocr
 from PIL import Image as PILImage
 from db import SessionLocal
 from models import Document, User, Feedback
@@ -331,12 +330,14 @@ async def upload_document(
 
             image = PILImage.open(file_path)
 
-            reader = easyocr.Reader(['en'])
+            image = PILImage.open(file_path)
 
-            result = reader.readtext(file_path, detail=0)
+            image = image.convert("L")
 
-            extracted_text = " ".join(result)
-
+            extracted_text = pytesseract.image_to_string(
+                image,
+                config='--psm 6'
+            )
 
         except Exception as e:
 
