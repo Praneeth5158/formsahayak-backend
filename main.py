@@ -1,4 +1,3 @@
-import pytesseract
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 import shutil
@@ -329,16 +328,33 @@ async def upload_document(
 
         try:
 
-            image = PILImage.open(file_path)
+            import base64
 
-            image = PILImage.open(file_path)
+            with open(file_path, "rb") as image_file:
+                base64_image = base64.b64encode(image_file.read()).decode("utf-8")
 
-            image = image.convert("L")
-
-            extracted_text = pytesseract.image_to_string(
-                image,
-                config='--psm 6'
+            vision_response = client.chat.completions.create(
+                model="llama-3.2-11b-vision-preview",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Extract all text from this form clearly."
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_image}"
+                                }
+                            }
+                        ]
+                    }
+                ]
             )
+
+            extracted_text = vision_response.choices[0].message.content
 
         except Exception as e:
 
