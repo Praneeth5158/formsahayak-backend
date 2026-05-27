@@ -5,7 +5,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.staticfiles import StaticFiles
 from gtts import gTTS
 from pydantic import BaseModel, EmailStr
-import pytesseract
+import easyocr
 from PIL import Image as PILImage
 from db import SessionLocal
 from models import Document, User, Feedback
@@ -41,6 +41,9 @@ client = Groq(api_key=GROQ_API_KEY)
 
 
 app = FastAPI()
+app.mount("/audio", StaticFiles(directory="audio"), name="audio")
+
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -328,7 +331,11 @@ async def upload_document(
 
             image = PILImage.open(file_path)
 
-            extracted_text = pytesseract.image_to_string(image)
+            reader = easyocr.Reader(['en'])
+
+            result = reader.readtext(file_path, detail=0)
+
+            extracted_text = " ".join(result)
 
 
         except Exception as e:
