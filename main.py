@@ -341,7 +341,7 @@ async def upload_document(
                         "content": [
                             {
                                 "type": "text",
-                                "text": "Extract all text from this form clearly."
+                                "text": "Explain this form in very simple step-by-step instructions for common Indian people, rural users, and old-age users. Use simple English and short points."
                             },
                             {
                                 "type": "image_url",
