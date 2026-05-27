@@ -334,7 +334,7 @@ async def upload_document(
                 base64_image = base64.b64encode(image_file.read()).decode("utf-8")
 
             vision_response = client.chat.completions.create(
-                model="llama-3.2-11b-vision-preview",
+                model="meta-llama/llama-4-scout-17b-16e-instruct",
                 messages=[
                     {
                         "role": "user",
