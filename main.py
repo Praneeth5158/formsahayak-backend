@@ -391,7 +391,12 @@ async def upload_document(
         
     try:
 
-        tts = gTTS(text=guidance_text, lang="en")
+        short_text = guidance_text[:1500]
+
+        tts = gTTS(
+            text=short_text,
+            lang="en"
+        )
 
         tts.save(audio_path)
 
@@ -793,27 +798,3 @@ def delete_history(doc_id: int):
     return {
         "message": "History deleted successfully"
     }
-
-@app.get("/history/{email}")
-
-def get_history(email: str):
-
-    connection = get_db_connection()
-
-    cursor = connection.cursor(pymysql.cursors.DictCursor)
-
-    query = """
-    SELECT * FROM documents
-    WHERE user_email=%s
-    ORDER BY id DESC
-    """
-
-    cursor.execute(query, (email,))
-
-    documents = cursor.fetchall()
-
-    cursor.close()
-
-    connection.close()
-
-    return documents
