@@ -413,14 +413,20 @@ async def upload_document(
 
     db = SessionLocal()
 
+    file_url = f"https://formsahayak-backend.onrender.com/uploads/{filename}"
+
+    audio_url = f"https://formsahayak-backend.onrender.com/audio/{audio_filename}"
+
+    pdf_url = f"https://formsahayak-backend.onrender.com/pdfs/{filename}.pdf"
+
     new_doc = Document(
         user_email=user_email,
         file_name=filename,
-        file_path=file_path,
+        file_path=file_url,
         extracted_text=extracted_text,
         guidance_text=guidance_text,
-        audio_path=audio_path,
-        pdf_path=pdf_path,
+        audio_path=audio_url,
+        pdf_path=pdf_url,
         created_at=current_time
     )
 
@@ -433,7 +439,7 @@ async def upload_document(
     audio_url = ""
 
     if audio_path != "":
-        audio_url = f"https://formsahayak-backend.onrender.com/{audio_path.replace(chr(92), '/')}"
+        audio_url =f"https://formsahayak-backend.onrender.com/audio/{audio_filename}"
 
     return {
         "message": "Uploaded & processed successfully",
@@ -527,27 +533,22 @@ def get_history(email: str):
 
     for doc in docs:
 
-        audio_url = ""
-
-        if doc.audio_path:
-            audio_url = f"https://formsahayak-backend.onrender.com/{doc.audio_path.replace(chr(92), '/')}"
-
         history.append({
-        "id": doc.id,
-        "file_name": doc.file_name,
-        "file_url": f"https://formsahayak-backend.onrender.com/uploads/{doc.file_name}",
-        "extracted_text": doc.extracted_text,
-        "guidance_text": doc.guidance_text,
-        "audio_path": audio_url,
-        "created_at": str(doc.created_at)
-    })
+            "id": doc.id,
+            "file_name": doc.file_name,
+            "file_url": doc.file_path,
+            "extracted_text": doc.extracted_text,
+            "guidance_text": doc.guidance_text,
+            "audio_path": doc.audio_path,
+            "pdf_path": doc.pdf_path,
+            "created_at": str(doc.created_at)
+        })
 
     db.close()
 
     return {
         "history": history
     }
-
 
 # ---------------- FEEDBACK API ----------------
 
@@ -579,36 +580,33 @@ def submit_feedback(data: FeedbackRequest):
 
 
 # ---------------- FORM DETAILS API ----------------
-
 @app.get("/form-details/{doc_id}")
 def get_form_details(doc_id: int):
 
     db = SessionLocal()
 
-    doc = db.query(Document).filter(Document.id == doc_id).first()
+    doc = db.query(Document).filter(
+        Document.id == doc_id
+    ).first()
 
     if not doc:
-        raise HTTPException(status_code=404, detail="Form not found")
-
-    file_url = f"https://formsahayak-backend.onrender.com/uploads/{doc.file_name}"
-
-    audio_url = ""
-
-    if doc.audio_path:
-        audio_url = f"https://formsahayak-backend.onrender.com/{doc.audio_path.replace(chr(92), '/')}"
+        raise HTTPException(
+            status_code=404,
+            detail="Form not found"
+        )
 
     db.close()
 
     return {
         "id": doc.id,
         "file_name": doc.file_name,
-        "file_url": file_url,
+        "file_url": doc.file_path,
         "extracted_text": doc.extracted_text,
         "guidance_text": doc.guidance_text,
-        "audio_path": audio_url,
+        "audio_path": doc.audio_path,
+        "pdf_path": doc.pdf_path,
         "created_at": str(doc.created_at)
     }
-
 
 # ---------------- CHANGE PASSWORD API ----------------
 
