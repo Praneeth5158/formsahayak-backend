@@ -1,3 +1,4 @@
+import pytesseract
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 import shutil
