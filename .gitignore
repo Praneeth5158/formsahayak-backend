@@ -3,6 +3,4 @@ google-services.json
 venv/
 __pycache__/
 node_modules/
-uploads/
-audio/
 pdfs/
