@@ -25,7 +25,6 @@ httpx==0.28.1
 
 numpy==1.26.4
 pandas==2.2.2
-
 opencv-python-headless==4.10.0.84
 pillow==10.4.0
 
@@ -40,10 +39,7 @@ groq==0.31.0
 reportlab==4.2.2
 pytz==2025.2
 
-
 gTTS==2.5.4
 python-dotenv==1.1.1
-groq==0.31.0
 
-pytesseract
-opencv-python-headless
+pytesseract==0.3.10
