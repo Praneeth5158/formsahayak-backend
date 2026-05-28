@@ -334,8 +334,29 @@ async def upload_document(
 
             image = cv2.imread(file_path)
 
+            scale_percent = 150
+
+            width = int(image.shape[1] * scale_percent / 100)
+            height = int(image.shape[0] * scale_percent / 100)
+
+            image = cv2.resize(image, (width, height))
+
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+            gray = cv2.GaussianBlur(gray, (5, 5), 0)
+
+            thresh = cv2.threshold(
+                gray,
+                0,
+                255,
+                cv2.THRESH_BINARY + cv2.THRESH_OTSU
+            )[1]
+
+            custom_config = r'--oem 3 --psm 11'
+
             data = pytesseract.image_to_data(
-                image,
+                thresh,
+                config=custom_config,
                 output_type=pytesseract.Output.DICT
             )
 
@@ -345,7 +366,9 @@ async def upload_document(
 
                 text = data["text"][i].strip()
 
-                if text != "":
+                conf = float(data["conf"][i])
+
+                if text != "" and conf > 40:
 
                     extracted_lines.append(text)
 
