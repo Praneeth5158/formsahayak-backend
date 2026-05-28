@@ -8,6 +8,8 @@ from pydantic import BaseModel, EmailStr
 from PIL import Image as PILImage
 from db import SessionLocal
 from models import Document, User, Feedback
+import pytesseract
+import cv2
 import re
 import os
 import time
@@ -324,43 +326,80 @@ async def upload_document(
 
     extracted_text = ""
 
+    ocr_boxes = []
+
     if file.filename.lower().endswith((".png", ".jpg", ".jpeg")):
 
         try:
 
-            import base64
+            image = cv2.imread(file_path)
 
-            with open(file_path, "rb") as image_file:
-                base64_image = base64.b64encode(image_file.read()).decode("utf-8")
-
-            vision_response = client.chat.completions.create(
-                model="meta-llama/llama-4-scout-17b-16e-instruct",
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": "Explain this form in very simple step-by-step instructions for common Indian people, rural users, and old-age users. Use simple English and short points."
-                            },
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{base64_image}"
-                                }
-                            }
-                        ]
-                    }
-                ]
+            data = pytesseract.image_to_data(
+                image,
+                output_type=pytesseract.Output.DICT
             )
 
-            extracted_text = vision_response.choices[0].message.content
+            extracted_lines = []
+
+            for i in range(len(data["text"])):
+
+                text = data["text"][i].strip()
+
+                if text != "":
+
+                    extracted_lines.append(text)
+
+                    ocr_boxes.append({
+                        "text": text,
+                        "x": int(data["left"][i]),
+                        "y": int(data["top"][i]),
+                        "w": int(data["width"][i]),
+                        "h": int(data["height"][i])
+                    })
+
+            extracted_text = "\n".join(extracted_lines)
 
         except Exception as e:
 
             logger.exception("OCR failed")
 
             extracted_text = ""
+
+            try:
+
+                import base64
+
+                with open(file_path, "rb") as image_file:
+                    base64_image = base64.b64encode(image_file.read()).decode("utf-8")
+
+                vision_response = client.chat.completions.create(
+                    model="meta-llama/llama-4-scout-17b-16e-instruct",
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "Explain this form in very simple step-by-step instructions for common Indian people, rural users, and old-age users. Use simple English and short points."
+                                },
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/jpeg;base64,{base64_image}"
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                )
+
+                extracted_text = vision_response.choices[0].message.content
+
+            except Exception as e:
+
+                logger.exception("OCR failed")
+
+                extracted_text = ""
 
     elif file.filename.lower().endswith(".pdf"):
 
@@ -374,39 +413,39 @@ async def upload_document(
 
         guidance_text = generate_guidance(extracted_text)
 
-   
+    
     audio_filename = filename + ".mp3"
 
     audio_path = os.path.join(
-        AUDIO_FOLDER,
-        audio_filename
-    )
-
-    pdf_path = generate_pdf_report(
-        filename,
-        extracted_text,
-        guidance_text,
-        file_path
-    )
-        
-    try:
-
-        short_text = guidance_text[:1500]
-
-        tts = gTTS(
-            text=short_text,
-            lang="en"
+            AUDIO_FOLDER,
+            audio_filename
         )
 
-        tts.save(audio_path)
+    pdf_path = generate_pdf_report(
+            filename,
+            extracted_text,
+            guidance_text,
+            file_path
+        )
+            
+    try:
+
+            short_text = guidance_text[:1500]
+
+            tts = gTTS(
+                text=short_text,
+                lang="en"
+            )
+
+            tts.save(audio_path)
 
     except Exception as e:
 
-        logger.exception("Audio generation failed")
+            logger.exception("Audio generation failed")
 
-        print(e)
+            print(e)
 
-        audio_path = ""
+            audio_path = ""
 
     india = timezone("Asia/Kolkata")
     current_time = datetime.now(india)
@@ -420,15 +459,15 @@ async def upload_document(
     pdf_url = f"https://formsahayak-backend.onrender.com/pdfs/{filename}.pdf"
 
     new_doc = Document(
-        user_email=user_email,
-        file_name=filename,
-        file_path=file_url,
-        extracted_text=extracted_text,
-        guidance_text=guidance_text,
-        audio_path=audio_url,
-        pdf_path=pdf_url,
-        created_at=current_time
-    )
+            user_email=user_email,
+            file_name=filename,
+            file_path=file_url,
+            extracted_text=extracted_text,
+            guidance_text=guidance_text,
+            audio_path=audio_url,
+            pdf_path=pdf_url,
+            created_at=current_time
+        )
 
     db.add(new_doc)
 
@@ -439,13 +478,15 @@ async def upload_document(
     audio_url = ""
 
     if audio_path != "":
-        audio_url =f"https://formsahayak-backend.onrender.com/audio/{audio_filename}"
+            audio_url =f"https://formsahayak-backend.onrender.com/audio/{audio_filename}"
 
     return {
         "message": "Uploaded & processed successfully",
         "guidance": guidance_text,
         "audio_file": audio_url,
-        "pdf_file": f"https://formsahayak-backend.onrender.com/{pdf_path.replace(chr(92), '/')}"
+        "pdf_file": f"https://formsahayak-backend.onrender.com/{pdf_path.replace(chr(92), '/')}",
+        "ocr_boxes": ocr_boxes,
+        "extracted_text": extracted_text
     }
 
 # ---------------- PROFILE API ----------------
@@ -765,37 +806,6 @@ def reset_password(data: ResetPasswordRequest):
 
 
 # ---------------- DELETE HISTORY API ----------------
-
-@app.delete("/delete-history/{doc_id}")
-def delete_history(doc_id: int):
-
-    db = SessionLocal()
-
-    doc = db.query(Document).filter(
-        Document.id == doc_id
-    ).first()
-
-    if not doc:
-        raise HTTPException(
-            status_code=404,
-            detail="History item not found"
-        )
-
-    if os.path.exists(doc.file_path):
-        os.remove(doc.file_path)
-
-    if doc.audio_path and os.path.exists(doc.audio_path):
-        os.remove(doc.audio_path)
-
-    db.delete(doc)
-
-    db.commit()
-
-    db.close()
-
-    return {
-        "message": "History deleted successfully"
-    }
 @app.delete("/delete-history/{doc_id}")
 def delete_history(doc_id: int):
 
@@ -820,4 +830,5 @@ def delete_history(doc_id: int):
 
     return {
         "message": "History deleted successfully"
+         
     }
