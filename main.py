@@ -455,9 +455,20 @@ async def upload_document(
 
             short_text = guidance_text[:1500]
 
+            lang_code = "en"
+
+            if language == "Telugu":
+                lang_code = "te"
+
+            elif language == "Hindi":
+                lang_code = "hi"
+
+            elif language == "Tamil":
+                lang_code = "ta"
+
             tts = gTTS(
                 text=short_text,
-                lang="en"
+                lang=lang_code
             )
 
             tts.save(audio_path)
