@@ -620,18 +620,34 @@ async def upload_document(
         lang_code = "ta"
 
     try:
-        # Natural Voice Generation - cleaning text before passing into gTTS
+        # Natural Voice Generation - cleaning text before passing into TTS
         cleaned_guidance = clean_text_for_tts(guidance_text)
         print("TTS INPUT:", cleaned_guidance)
         short_text = cleaned_guidance[:1500]
 
-        tts = gTTS(
-            text=short_text,
-            lang=lang_code
-        )
-        tts.save(audio_path)
+        # Use edge-tts for premium neural voices
+        try:
+            import edge_tts
+            voice_map = {
+                "Telugu": "te-IN-MohanNeural",
+                "Tamil": "ta-IN-ValluvarNeural",
+                "Hindi": "hi-IN-MadhurNeural",
+                "English": "en-US-AvaNeural"
+            }
+            voice = voice_map.get(language, "en-US-AvaNeural")
+            communicate = edge_tts.Communicate(short_text, voice)
+            await communicate.save(audio_path)
+            logger.info(f"Edge-TTS voice successfully generated: {voice}")
+        except Exception as e_edge:
+            logger.warning(f"edge-tts failed: {e_edge}, falling back to gTTS")
+            # Fallback to standard gTTS
+            tts = gTTS(
+                text=short_text,
+                lang=lang_code
+            )
+            tts.save(audio_path)
     except Exception as e:
-        logger.exception("Audio generation failed")
+        logger.exception("Audio generation failed completely")
         audio_path = ""
 
     # 12. Dynamic Highlights & Spoken Guidance Synchronization Mapping
@@ -711,6 +727,7 @@ async def upload_document(
 
     print(f"OCR BOXES DETECTED: {len(ocr_boxes)}")
     print("OCR BOXES:", len(ocr_boxes))
+    print("OCR BOXES SENT:", len(ocr_boxes))
     print(f"LANGUAGE RECEIVED: {language}")
     print(f"TTS LANGUAGE: {lang_code}")
     print(f"OCR TEXT LENGTH: {len(extracted_text)}")
@@ -983,7 +1000,15 @@ def send_otp(data: ForgotPasswordRequest):
 
     try:
 
-        server = smtplib.SMTP_SSL("smtp.gmail.com", 465)
+        server = smtplib.SMTP(
+        "smtp.gmail.com",
+        587,
+        timeout=30
+        )
+
+        server.ehlo()
+
+        server.starttls()
 
 
         server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
