@@ -57,10 +57,12 @@ class Feedback(Base):
     id = Column(Integer, primary_key=True, index=True)
 
     user_email = Column(String(100))
-    app_experience = Column(String(50))
-    voice_guidance_helpful = Column(String(50))
-    recommend_app = Column(String(50))
-    additional_comments = Column(Text)
+    app_experience = Column(String(50), nullable=True)
+    voice_guidance_helpful = Column(String(50), nullable=True)
+    recommend_app = Column(String(50), nullable=True)
+    additional_comments = Column(Text, nullable=True)
+    rating = Column(String(50), nullable=True)
+    feedback_text = Column(Text, nullable=True)
 
     created_at = Column(
         TIMESTAMP,

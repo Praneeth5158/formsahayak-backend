@@ -9,6 +9,7 @@ from PIL import Image as PILImage
 from db import SessionLocal
 from models import Document, User, Feedback
 import pytesseract
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 import cv2
 import re
 import os
@@ -139,10 +140,12 @@ class Login(BaseModel):
 
 class FeedbackRequest(BaseModel):
     user_email: str
-    app_experience: str
-    voice_guidance_helpful: str
-    recommend_app: str
-    additional_comments: str
+    app_experience: str = None
+    voice_guidance_helpful: str = None
+    recommend_app: str = None
+    additional_comments: str = None
+    rating: str = None
+    feedback_text: str = None
 
 @app.post("/login")
 def login(user: Login):
@@ -193,22 +196,61 @@ class ResetPasswordRequest(BaseModel):
     new_password: str
     confirm_password: str
 
+# ---------------- TTS TEXT CLEANING HELPER ----------------
+def clean_text_for_tts(text: str) -> str:
+    if not text:
+        return ""
+    
+    # 1. Remove markdown characters like **, *, _, #, `, ~, etc.
+    text = re.sub(r'[*_#`~]', '', text)
+    
+    # 2. Remove list bullet points (like -, *, +, •) at the start of lines or within text
+    text = re.sub(r'^\s*[\-\*\+\•]\s*', ' ', text, flags=re.MULTILINE)
+    text = re.sub(r'\s+[\-\*\+\•]\s+', ' ', text)
+    
+    # 3. Remove list-numbering prefixes (like "1. ", "2) ", "1 - ", "4: ") at the start of lines
+    text = re.sub(r'^\s*\d+[\.\)\-\:]\s*', ' ', text, flags=re.MULTILINE)
+    
+    # 4. Remove list-numbering prefixes following sentence endings (e.g. ". 1. ", ". 2) ")
+    text = re.sub(r'(?<=[.!?])\s*\d+[\dots\.\)\-\:]\s*', ' ', text)
+    
+    # 5. Remove any brackets surrounding numbers (like "[1]", "(2)") at the start of lines or sentences
+    text = re.sub(r'^\s*[\(\[]\d+[\)\]]\s*', ' ', text, flags=re.MULTILINE)
+    text = re.sub(r'(?<=[.!?])\s*[\(\[]\d+[\)\]]\s*', ' ', text)
+    
+    # 6. Normalize line breaks. Replace multiple line breaks or newlines with a full stop and space to create natural spoken pauses
+    text = re.sub(r'\n+', ' . ', text)
+    
+    # 7. Clean up multiple spaces
+    text = re.sub(r'\s+', ' ', text)
+    
+    # 8. Strip leading and trailing whitespace
+    text = text.strip()
+    
+    return text
+
 # ---------------- AI FUNCTION ----------------
 def generate_guidance(text: str, language: str) -> str:
 
     prompt = f"""
-    Analyze this form text and give proper guidance for filling the form.
+    Analyze this form text and give proper, clear guidance for filling the form.
 
     Form Text:
     {text}
 
     IMPORTANT:
-    Respond completely in {language} language.
+    Respond completely in the {language} language.
+    You MUST write the response entirely in the native script of {language} (Devanagari for Hindi, Telugu script for Telugu, Tamil script for Tamil, English for English).
+    Do NOT use English script/alphabet for regional languages, except for field labels as instructed below.
 
-    Give:
-    - short numbered instructions
-    - simple words
-    - easy guidance for rural users and old-age users
+    Requirements:
+    1. Provide short, simple, step-by-step numbered instructions.
+    2. Use simple, natural, and polite spoken words suitable for rural and old-age users.
+    3. Crucial for Highlight Synchronization: Whenever you mention or refer to a specific form field or box that the user needs to fill out, you MUST explicitly mention the field's printed English name in parentheses next to it.
+       Example in Telugu: "మొదటి పెట్టెలో మీ పేరు (Name) ని నమోదు చేయండి."
+       Example in Hindi: "कृपया अपना मोबाइल नंबर (Phone) या (Mobile) यहाँ दर्ज करें।"
+       Example in Tamil: "உங்கள் மின்னஞ்சல் முகவரியை (Email) பெட்டியில் எழுதவும்."
+    4. Focus on guiding the user step-by-step through the main fields like Name, Email, Phone, Address, Date of Birth (DOB), Signature, Account Number, etc.
     """
 
     try:
@@ -320,82 +362,200 @@ async def upload_document(
     language: str = Form(None),
     file: UploadFile = File(...)
 ):
+    import numpy as np
 
     filename = f"{int(time.time())}_{file.filename}"
-
     file_path = os.path.join(UPLOAD_FOLDER, filename)
 
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
     extracted_text = ""
-
     ocr_boxes = []
+    detected_fields_count = 0
+
+    logger.info(f"FILE UPLOADED: {file.filename}")
+    logger.info(f"LANGUAGE RECEIVED: {language}")
 
     if file.filename.lower().endswith((".png", ".jpg", ".jpeg")):
-
         try:
-
             image = cv2.imread(file_path)
+            orig_h, orig_w = image.shape[:2]
 
-            scale_percent = 150
+            # 1. Advanced Resize/Scaling (Target width 2000px for optimal OCR character height)
+            target_width = 2000
+            scale_factor = 1.0
+            if orig_w < target_width:
+                scale_factor = target_width / orig_w
+                width = int(orig_w * scale_factor)
+                height = int(orig_h * scale_factor)
+                image_resized = cv2.resize(image, (width, height), interpolation=cv2.INTER_CUBIC)
+            else:
+                image_resized = image.copy()
 
-            width = int(image.shape[1] * scale_percent / 100)
-            height = int(image.shape[0] * scale_percent / 100)
+            # 2. Grayscale Conversion
+            gray = cv2.cvtColor(image_resized, cv2.COLOR_BGR2GRAY)
 
-            image = cv2.resize(image, (width, height))
+            # 3. Bilateral Filtering Denoising (Keep text edges sharp, clean noise)
+            denoised = cv2.bilateralFilter(gray, 9, 75, 75)
 
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            # 4. Sharpening (Filters out scan blur and heightens text contrast)
+            sharpen_kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
+            sharpened = cv2.filter2D(denoised, -1, sharpen_kernel)
 
-            gray = cv2.GaussianBlur(gray, (5, 5), 0)
+            # 5. Gaussian Blur (Attenuates remaining high-frequency halftone/scanner noise)
+            blurred = cv2.GaussianBlur(sharpened, (3, 3), 0)
 
-            thresh = cv2.threshold(
-                gray,
-                0,
+            # 6. Adaptive Thresholding (Inverted for contours, standard for OCR)
+            thresh_inv = cv2.adaptiveThreshold(
+                blurred,
                 255,
-                cv2.THRESH_BINARY + cv2.THRESH_OTSU
-            )[1]
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY_INV,
+                15,
+                10
+            )
 
-            custom_config = r'--oem 3 --psm 6'
+            processed_ocr = cv2.adaptiveThreshold(
+                blurred,
+                255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY,
+                15,
+                10
+            )
 
-            data = pytesseract.image_to_data(
-                thresh,
-                config=custom_config,
+            # 7. Morphology Closing (Joins broken characters)
+            kernel_close = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+            processed_ocr = cv2.morphologyEx(processed_ocr, cv2.MORPH_CLOSE, kernel_close)
+
+            # 8. Run Tesseract OCR on processed image
+            # Dual PSM Engine Configurations: Merging PSM 6 (uniform block) and PSM 11 (sparse text labels)
+            config_psm6 = r'--oem 3 --psm 6'
+            config_psm11 = r'--oem 3 --psm 11'
+
+            data_psm6 = pytesseract.image_to_data(
+                processed_ocr,
+                config=config_psm6,
                 output_type=pytesseract.Output.DICT
             )
 
+            data_psm11 = pytesseract.image_to_data(
+                processed_ocr,
+                config=config_psm11,
+                output_type=pytesseract.Output.DICT
+            )
+
+            seen_boxes = []  # Keep track of x, y, w, h in original coordinates to prevent duplicates
             extracted_lines = []
 
-            for i in range(len(data["text"])):
+            def add_ocr_box(word_text, rx, ry, rw, rh, conf):
+                word_clean = word_text.strip()
+                if not word_clean or conf < 20:  # Kept lower confidence filter to catch small/faint text
+                    return
 
-                text = data["text"][i].strip()
+                # Map coordinates back to original image size
+                x = int(rx / scale_factor)
+                y = int(ry / scale_factor)
+                w = int(rw / scale_factor)
+                h = int(rh / scale_factor)
 
-                conf = float(data["conf"][i])
+                # Overlap check
+                is_duplicate = False
+                for sx, sy, sw, sh in seen_boxes:
+                    if abs(x - sx) < 15 and abs(y - sy) < 15 and abs(w - sw) < 25 and abs(h - sh) < 25:
+                        is_duplicate = True
+                        break
 
-                if text != "" and conf > 40:
-
-                    extracted_lines.append(text)
-
+                if not is_duplicate:
                     ocr_boxes.append({
-                        "text": text,
-                        "x": int(data["left"][i]),
-                        "y": int(data["top"][i]),
-                        "w": int(data["width"][i]),
-                        "h": int(data["height"][i])
+                        "text": word_clean,
+                        "x": x,
+                        "y": y,
+                        "w": w,
+                        "h": h,
+                        "confidence": float(conf)
                     })
+                    seen_boxes.append((x, y, w, h))
+                    extracted_lines.append(word_clean)
+
+            # Process Primary PSM 6
+            for i in range(len(data_psm6["text"])):
+                add_ocr_box(
+                    data_psm6["text"][i],
+                    data_psm6["left"][i],
+                    data_psm6["top"][i],
+                    data_psm6["width"][i],
+                    data_psm6["height"][i],
+                    data_psm6["conf"][i]
+                )
+
+            # Process Secondary PSM 11 to catch sparse missing labels
+            for i in range(len(data_psm11["text"])):
+                add_ocr_box(
+                    data_psm11["text"][i],
+                    data_psm11["left"][i],
+                    data_psm11["top"][i],
+                    data_psm11["width"][i],
+                    data_psm11["height"][i],
+                    data_psm11["conf"][i]
+                )
+
+            # 9. Contour Detection to Identify Physical Input Boxes & Underlines
+            contours, _ = cv2.findContours(thresh_inv, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contour_boxes = []
+            for cnt in contours:
+                x, y, w, h = cv2.boundingRect(cnt)
+                aspect_ratio = float(w) / h
+                if 40 < w < 900 and 15 < h < 120:
+                    if aspect_ratio > 1.2:
+                        contour_boxes.append({"x": x, "y": y, "w": w, "h": h})
+
+            # Map contours to closest OCR label
+            detected_fields_count = len(contour_boxes)
+            for cb in contour_boxes:
+                cx, cy, cw, ch = cb["x"], cb["y"], cb["w"], cb["h"]
+                best_label = "Input Field"
+                min_dist = 999999
+
+                # Match against ocr_boxes
+                for box in ocr_boxes:
+                    bx = box["x"] * scale_factor
+                    by = box["y"] * scale_factor
+                    # Text box to the left
+                    if bx < cx and (cx - bx) < 180 and abs(by - cy) < 40:
+                        dist = cx - bx
+                        if dist < min_dist:
+                            min_dist = dist
+                            best_label = box["text"]
+                    # Text box above
+                    elif by < cy and (cy - by) < 50 and abs(bx - cx) < 100:
+                        dist = cy - by
+                        if dist < min_dist:
+                            min_dist = dist
+                            best_label = box["text"]
+
+                ox = int(cx / scale_factor)
+                oy = int(cy / scale_factor)
+                ow = int(cw / scale_factor)
+                oh = int(ch / scale_factor)
+
+                ocr_boxes.append({
+                    "text": f"[Field: {best_label}]",
+                    "x": ox,
+                    "y": oy,
+                    "w": ow,
+                    "h": oh,
+                    "confidence": 95.0
+                })
 
             extracted_text = "\n".join(extracted_lines)
 
         except Exception as e:
-
-            logger.exception("OCR failed")
-
+            logger.exception("OCR pipeline failed, falling back to Vision LLM")
             extracted_text = ""
-
             try:
-
                 import base64
-
                 with open(file_path, "rb") as image_file:
                     base64_image = base64.b64encode(image_file.read()).decode("utf-8")
 
@@ -419,115 +579,145 @@ async def upload_document(
                         }
                     ]
                 )
-
                 extracted_text = vision_response.choices[0].message.content
-
-            except Exception as e:
-
-                logger.exception("OCR failed")
-
+            except Exception as e_vision:
+                logger.exception("Vision fallback also failed")
                 extracted_text = ""
 
     elif file.filename.lower().endswith(".pdf"):
-
         extracted_text = "PDF uploaded"
 
+    # 10. Generate Multilingual AI Guidance
     if extracted_text.strip() == "":
-
         guidance_text = "Unable to detect text clearly."
-
     else:
+        guidance_text = generate_guidance(extracted_text, language)
 
-        guidance_text = generate_guidance(
-        extracted_text,
-        language
-    )
-
-    
+    # 11. Speech Generation with Text Cleaning
     audio_filename = filename + ".mp3"
-
-    audio_path = os.path.join(
-            AUDIO_FOLDER,
-            audio_filename
-        )
+    audio_path = os.path.join(AUDIO_FOLDER, audio_filename)
 
     pdf_path = generate_pdf_report(
-            filename,
-            extracted_text,
-            guidance_text,
-            file_path
-        )
-            
+        filename,
+        extracted_text,
+        guidance_text,
+        file_path
+    )
+
+    lang_code = "en"
+    if language == "Telugu":
+        lang_code = "te"
+    elif language == "Hindi":
+        lang_code = "hi"
+    elif language == "Tamil":
+        lang_code = "ta"
+
     try:
+        # Natural Voice Generation - cleaning text before passing into gTTS
+        cleaned_guidance = clean_text_for_tts(guidance_text)
+        short_text = cleaned_guidance[:1500]
 
-            short_text = guidance_text[:1500]
-
-            lang_code = "en"
-
-            if language == "Telugu":
-                lang_code = "te"
-
-            elif language == "Hindi":
-                lang_code = "hi"
-
-            elif language == "Tamil":
-                lang_code = "ta"
-
-            tts = gTTS(
-                text=short_text,
-                lang=lang_code
-            )
-
-            tts.save(audio_path)
-
+        tts = gTTS(
+            text=short_text,
+            lang=lang_code
+        )
+        tts.save(audio_path)
     except Exception as e:
+        logger.exception("Audio generation failed")
+        audio_path = ""
 
-            logger.exception("Audio generation failed")
+    # 12. Dynamic Highlights & Spoken Guidance Synchronization Mapping
+    guidance_steps = []
+    raw_steps = [s.strip() for s in re.split(r'[\n\.]+', guidance_text) if s.strip()]
+    for idx, step in enumerate(raw_steps):
+        parentheses_terms = re.findall(r'\(([^)]+)\)', step)
+        matched_boxes = []
+        for term in parentheses_terms:
+            term_clean = term.strip().lower()
+            for box in ocr_boxes:
+                box_text = box["text"].lower()
+                if term_clean in box_text or box_text in term_clean or (term_clean == "phone" and "mobile" in box_text) or (term_clean == "dob" and "date" in box_text):
+                    matched_boxes.append(box)
 
-            print(e)
+        # Keyword matching fallback
+        if not matched_boxes:
+            common_keywords = ["name", "email", "phone", "mobile", "address", "dob", "date", "signature", "account", "age"]
+            step_lower = step.lower()
+            for kw in common_keywords:
+                if kw in step_lower:
+                    for box in ocr_boxes:
+                        box_text = box["text"].lower()
+                        if kw in box_text or (kw == "phone" and "mobile" in box_text) or (kw == "dob" and "date" in box_text):
+                            matched_boxes.append(box)
 
-            audio_path = ""
+        # De-duplicate matched boxes
+        unique_matches = []
+        seen_match = set()
+        for box in matched_boxes:
+            box_key = (box["x"], box["y"], box["w"], box["h"])
+            if box_key not in seen_match:
+                seen_match.add(box_key)
+                unique_matches.append(box)
 
+        guidance_steps.append({
+            "step_index": idx + 1,
+            "step_text": step,
+            "matched_fields": parentheses_terms if parentheses_terms else ["General"],
+            "ocr_boxes": unique_matches
+        })
+
+    # Save to Database
     india = timezone("Asia/Kolkata")
     current_time = datetime.now(india)
 
     db = SessionLocal()
-
     file_url = f"https://formsahayak-backend.onrender.com/uploads/{filename}"
-
     audio_url = f"https://formsahayak-backend.onrender.com/audio/{audio_filename}"
-
     pdf_url = f"https://formsahayak-backend.onrender.com/pdfs/{filename}.pdf"
 
     new_doc = Document(
-            user_email=user_email,
-            file_name=filename,
-            file_path=file_url,
-            extracted_text=extracted_text,
-            guidance_text=guidance_text,
-            audio_path=audio_url,
-            pdf_path=pdf_url,
-            created_at=current_time
-        )
-
+        user_email=user_email,
+        file_name=filename,
+        file_path=file_url,
+        extracted_text=extracted_text,
+        guidance_text=guidance_text,
+        audio_path=audio_url,
+        pdf_path=pdf_url,
+        created_at=current_time
+    )
     db.add(new_doc)
-
     db.commit()
-
     db.close()
 
-    audio_url = ""
-
+    # Formulate urls for response
+    audio_response_url = ""
     if audio_path != "":
-            audio_url =f"https://formsahayak-backend.onrender.com/audio/{audio_filename}"
+        audio_response_url = f"https://formsahayak-backend.onrender.com/audio/{audio_filename}"
+
+    # Print backend debug verification logs exactly as required
+    logger.info(f"OCR BOXES DETECTED: {len(ocr_boxes)}")
+    logger.info(f"LANGUAGE RECEIVED: {language}")
+    logger.info(f"TTS LANGUAGE: {lang_code}")
+    logger.info(f"OCR TEXT LENGTH: {len(extracted_text)}")
+    logger.info(f"DETECTED CONTOURS COUNT: {detected_fields_count}")
+
+    print(f"OCR BOXES DETECTED: {len(ocr_boxes)}")
+    print(f"LANGUAGE RECEIVED: {language}")
+    print(f"TTS LANGUAGE: {lang_code}")
+    print(f"OCR TEXT LENGTH: {len(extracted_text)}")
 
     return {
         "message": "Uploaded & processed successfully",
         "guidance": guidance_text,
-        "audio_file": audio_url,
+        "guidance_text": guidance_text,
+        "audio_file": audio_response_url,
+        "audio_path": audio_response_url,
         "pdf_file": f"https://formsahayak-backend.onrender.com/{pdf_path.replace(chr(92), '/')}",
+        "pdf_path": f"https://formsahayak-backend.onrender.com/{pdf_path.replace(chr(92), '/')}",
         "ocr_boxes": ocr_boxes,
-        "extracted_text": extracted_text
+        "extracted_text": extracted_text,
+        "uploaded_image_path": file_url,
+        "guidance_steps": guidance_steps
     }
 
 # ---------------- PROFILE API ----------------
@@ -634,20 +824,27 @@ def get_history(email: str):
 
 # ---------------- FEEDBACK API ----------------
 
-@app.post("/submit-feedback")
-def submit_feedback(data: FeedbackRequest):
-
+def process_feedback_submission(data: FeedbackRequest):
     india = timezone("Asia/Kolkata")
     current_time = datetime.now(india)
 
     db = SessionLocal()
 
+    # Combine text details for additional_comments as a robust fallback
+    combined_comments = data.additional_comments or ""
+    if data.feedback_text:
+        combined_comments = f"Feedback: {data.feedback_text}. {combined_comments}".strip()
+    if data.rating:
+        combined_comments = f"Rating: {data.rating}. {combined_comments}".strip()
+
     feedback = Feedback(
         user_email=data.user_email,
-        app_experience=data.app_experience,
-        voice_guidance_helpful=data.voice_guidance_helpful,
-        recommend_app=data.recommend_app,
-        additional_comments=data.additional_comments,
+        app_experience=data.app_experience or "",
+        voice_guidance_helpful=data.voice_guidance_helpful or "",
+        recommend_app=data.recommend_app or "",
+        additional_comments=combined_comments,
+        rating=data.rating or "",
+        feedback_text=data.feedback_text or "",
         created_at=current_time
     )
 
@@ -658,6 +855,22 @@ def submit_feedback(data: FeedbackRequest):
     return {
         "message": "Feedback submitted successfully"
     }
+
+@app.post("/submit-feedback")
+def submit_feedback(data: FeedbackRequest):
+    return process_feedback_submission(data)
+
+@app.post("/submit-feedback/")
+def submit_feedback_slash(data: FeedbackRequest):
+    return process_feedback_submission(data)
+
+@app.post("/feedback")
+def submit_feedback_alias(data: FeedbackRequest):
+    return process_feedback_submission(data)
+
+@app.post("/feedback/")
+def submit_feedback_alias_slash(data: FeedbackRequest):
+    return process_feedback_submission(data)
 
 
 
