@@ -201,33 +201,40 @@ def clean_text_for_tts(text: str) -> str:
     if not text:
         return ""
     
-    # 1. Remove markdown characters like **, *, _, #, `, ~, etc.
-    text = re.sub(r'[*_#`~]', '', text)
+    # 1. Split text into lines
+    lines = text.split('\n')
+    cleaned_lines = []
     
-    # 2. Remove list bullet points (like -, *, +, •) at the start of lines or within text
-    text = re.sub(r'^\s*[\-\*\+\•]\s*', ' ', text, flags=re.MULTILINE)
-    text = re.sub(r'\s+[\-\*\+\•]\s+', ' ', text)
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        
+        # Remove markdown bold/italic/headers
+        line = re.sub(r'[*_#`~]', '', line)
+        
+        # Remove leading bullets (- , * , + , •) and leading whitespace
+        line = re.sub(r'^[\-\*\+\•\s]+', '', line)
+        
+        # Remove numbering prefixes at the start of the line like: "1.", "2)", "1. ", "2) ", "1 - "
+        line = re.sub(r'^\d+[\.\)\-\:\s]+', '', line)
+        
+        line = line.strip()
+        if not line:
+            continue
+            
+        # Ensure the line ends with a period for punctuation and natural flow pause
+        if not line.endswith(('.', '!', '?', '।')):
+            line += '.'
+            
+        cleaned_lines.append(line)
+        
+    # Join with space to preserve sentence flow and pauses
+    cleaned_text = " ".join(cleaned_lines)
     
-    # 3. Remove list-numbering prefixes (like "1. ", "2) ", "1 - ", "4: ") at the start of lines
-    text = re.sub(r'^\s*\d+[\.\)\-\:]\s*', ' ', text, flags=re.MULTILINE)
-    
-    # 4. Remove list-numbering prefixes following sentence endings (e.g. ". 1. ", ". 2) ")
-    text = re.sub(r'(?<=[.!?])\s*\d+[\dots\.\)\-\:]\s*', ' ', text)
-    
-    # 5. Remove any brackets surrounding numbers (like "[1]", "(2)") at the start of lines or sentences
-    text = re.sub(r'^\s*[\(\[]\d+[\)\]]\s*', ' ', text, flags=re.MULTILINE)
-    text = re.sub(r'(?<=[.!?])\s*[\(\[]\d+[\)\]]\s*', ' ', text)
-    
-    # 6. Normalize line breaks. Replace multiple line breaks or newlines with a full stop and space to create natural spoken pauses
-    text = re.sub(r'\n+', ' . ', text)
-    
-    # 7. Clean up multiple spaces
-    text = re.sub(r'\s+', ' ', text)
-    
-    # 8. Strip leading and trailing whitespace
-    text = text.strip()
-    
-    return text
+    # Normalize spaces
+    cleaned_text = re.sub(r'\s+', ' ', cleaned_text).strip()
+    return cleaned_text
 
 # ---------------- AI FUNCTION ----------------
 def generate_guidance(text: str, language: str) -> str:
@@ -615,6 +622,7 @@ async def upload_document(
     try:
         # Natural Voice Generation - cleaning text before passing into gTTS
         cleaned_guidance = clean_text_for_tts(guidance_text)
+        print("TTS INPUT:", cleaned_guidance)
         short_text = cleaned_guidance[:1500]
 
         tts = gTTS(
@@ -702,6 +710,7 @@ async def upload_document(
     logger.info(f"DETECTED CONTOURS COUNT: {detected_fields_count}")
 
     print(f"OCR BOXES DETECTED: {len(ocr_boxes)}")
+    print("OCR BOXES:", len(ocr_boxes))
     print(f"LANGUAGE RECEIVED: {language}")
     print(f"TTS LANGUAGE: {lang_code}")
     print(f"OCR TEXT LENGTH: {len(extracted_text)}")
@@ -825,6 +834,7 @@ def get_history(email: str):
 # ---------------- FEEDBACK API ----------------
 
 def process_feedback_submission(data: FeedbackRequest):
+    print("FEEDBACK RECEIVED")
     india = timezone("Asia/Kolkata")
     current_time = datetime.now(india)
 
