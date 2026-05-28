@@ -194,8 +194,7 @@ class ResetPasswordRequest(BaseModel):
     confirm_password: str
 
 # ---------------- AI FUNCTION ----------------
-
-def generate_guidance(text: str) -> str:
+def generate_guidance(text: str, language: str) -> str:
 
     prompt = f"""
     Analyze this form text and give proper guidance for filling the form.
@@ -203,7 +202,13 @@ def generate_guidance(text: str) -> str:
     Form Text:
     {text}
 
-    Give short numbered instructions.
+    IMPORTANT:
+    Respond completely in {language} language.
+
+    Give:
+    - short numbered instructions
+    - simple words
+    - easy guidance for rural users and old-age users
     """
 
     try:
@@ -225,7 +230,6 @@ def generate_guidance(text: str) -> str:
         logger.exception("Groq AI failed")
 
         return str(e)
-
 def generate_pdf_report(
     filename,
     extracted_text,
@@ -352,7 +356,7 @@ async def upload_document(
                 cv2.THRESH_BINARY + cv2.THRESH_OTSU
             )[1]
 
-            custom_config = r'--oem 3 --psm 11'
+            custom_config = r'--oem 3 --psm 6'
 
             data = pytesseract.image_to_data(
                 thresh,
@@ -434,7 +438,10 @@ async def upload_document(
 
     else:
 
-        guidance_text = generate_guidance(extracted_text)
+        guidance_text = generate_guidance(
+        extracted_text,
+        language
+    )
 
     
     audio_filename = filename + ".mp3"
