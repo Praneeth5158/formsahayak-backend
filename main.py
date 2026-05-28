@@ -9,10 +9,11 @@ from PIL import Image as PILImage
 from db import SessionLocal
 from models import Document, User, Feedback
 import pytesseract
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+import os
+if os.name == 'nt':
+    pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 import cv2
 import re
-import os
 import time
 from dotenv import load_dotenv
 from groq import Groq
