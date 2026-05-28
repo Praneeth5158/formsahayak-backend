@@ -796,3 +796,28 @@ def delete_history(doc_id: int):
     return {
         "message": "History deleted successfully"
     }
+@app.delete("/delete-history/{doc_id}")
+def delete_history(doc_id: int):
+
+    db = SessionLocal()
+
+    doc = db.query(Document).filter(
+        Document.id == doc_id
+    ).first()
+
+    if not doc:
+
+        raise HTTPException(
+            status_code=404,
+            detail="Document not found"
+        )
+
+    db.delete(doc)
+
+    db.commit()
+
+    db.close()
+
+    return {
+        "message": "History deleted successfully"
+    }
