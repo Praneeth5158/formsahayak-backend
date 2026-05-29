@@ -1007,41 +1007,31 @@ def send_otp(data: ForgotPasswordRequest):
 
     otp_storage[data.email] = otp
 
-    subject = "FormSahayak OTP Verification"
-
-    body = f"Your FormSahayak OTP is: {otp}"
-
-    msg = MIMEText(body)
-
-    msg["Subject"] = subject
-    msg["From"] = EMAIL_ADDRESS
-    msg["To"] = data.email
-
     try:
-
-        server = smtplib.SMTP(
-        "smtp.gmail.com",
-        587,
-        timeout=30
+        import os
+        import requests
+        
+        resend_api_key = os.getenv("RESEND_API_KEY", "re_your_api_key_here")
+        
+        response = requests.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {resend_api_key}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "from": "Formsahayak <onboarding@resend.dev>",
+                "to": [data.email],
+                "subject": "Reset Password OTP",
+                "html": f"<p>Your password reset OTP is <strong>{otp}</strong>. It is valid for 10 minutes.</p>"
+            },
+            timeout=15
         )
-
-        server.ehlo()
-
-        server.starttls()
-
-
-        server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-
-        server.sendmail(
-            EMAIL_ADDRESS,
-            data.email,
-            msg.as_string()
-        )
-
-        server.quit()
+        
+        if response.status_code != 200:
+            raise Exception(f"Resend API failed with status {response.status_code}: {response.text}")
 
     except Exception as e:
-
         raise HTTPException(
             status_code=500,
             detail=str(e)
