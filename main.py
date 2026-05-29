@@ -1011,7 +1011,13 @@ def send_otp(data: ForgotPasswordRequest):
         import os
         import requests
         
-        resend_api_key = os.getenv("RESEND_API_KEY", "re_your_api_key_here")
+        raw_key = os.getenv("RESEND_API_KEY", "re_your_api_key_here")
+        resend_api_key = raw_key.strip().strip("'\"")
+        
+        logger.info(f"Attempting to send OTP via Resend. Receiver: {data.email}")
+        logger.info(f"Resend API key length (raw): {len(raw_key)}")
+        logger.info(f"Resend API key length (cleaned): {len(resend_api_key)}")
+        logger.info(f"Resend API key starts with: {resend_api_key[:7] if len(resend_api_key) >= 7 else resend_api_key}...")
         
         response = requests.post(
             "https://api.resend.com/emails",
@@ -1029,9 +1035,13 @@ def send_otp(data: ForgotPasswordRequest):
         )
         
         if response.status_code != 200:
+            logger.error(f"Resend API error response: {response.text}")
             raise Exception(f"Resend API failed with status {response.status_code}: {response.text}")
 
+        logger.info("Resend API email sent successfully!")
+
     except Exception as e:
+        logger.exception("Send OTP execution failed")
         raise HTTPException(
             status_code=500,
             detail=str(e)
