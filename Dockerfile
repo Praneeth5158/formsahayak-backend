@@ -10,13 +10,10 @@ ENV PORT=10000
 WORKDIR /app
 
 # Install system-level dependencies:
-# 1. tesseract-ocr & multilingual language packs (Hindi, Telugu, Tamil) for advanced OCR scanning
+# 1. tesseract-ocr for advanced OCR scanning
 # 2. libgl1-mesa-glx & libglib2.0-0 for OpenCV image preprocessing
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
-    tesseract-ocr-hin \
-    tesseract-ocr-tel \
-    tesseract-ocr-tam \
     libgl1-mesa-glx \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
