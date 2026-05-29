@@ -10,12 +10,9 @@ ENV PORT=10000
 WORKDIR /app
 
 # Install system-level dependencies:
-# 1. tesseract-ocr for advanced OCR scanning
-# 2. libgl1-mesa-glx & libglib2.0-0 for OpenCV image preprocessing
+# tesseract-ocr for advanced OCR scanning
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
-    libgl1-mesa-glx \
-    libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements.txt first to leverage Docker build cache
