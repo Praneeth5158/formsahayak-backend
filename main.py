@@ -1011,34 +1011,62 @@ def send_otp(data: ForgotPasswordRequest):
         import os
         import requests
         
-        raw_key = os.getenv("RESEND_API_KEY", "re_your_api_key_here")
-        resend_api_key = raw_key.strip().strip("'\"")
+        brevo_api_key = os.getenv("BREVO_API_KEY", "").strip().strip("'\"")
+        resend_api_key = os.getenv("RESEND_API_KEY", "").strip().strip("'\"")
         
-        logger.info(f"Attempting to send OTP via Resend. Receiver: {data.email}")
-        logger.info(f"Resend API key length (raw): {len(raw_key)}")
-        logger.info(f"Resend API key length (cleaned): {len(resend_api_key)}")
-        logger.info(f"Resend API key starts with: {resend_api_key[:7] if len(resend_api_key) >= 7 else resend_api_key}...")
+        sender_email = os.getenv("SENDER_EMAIL", EMAIL_ADDRESS)
         
-        response = requests.post(
-            "https://api.resend.com/emails",
-            headers={
-                "Authorization": f"Bearer {resend_api_key}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "from": "Formsahayak <onboarding@resend.dev>",
-                "to": [data.email],
+        if brevo_api_key:
+            logger.info(f"Attempting to send OTP via Brevo. Receiver: {data.email}")
+            logger.info(f"Brevo API key length: {len(brevo_api_key)}")
+            logger.info(f"Brevo API key starts with: {brevo_api_key[:7] if len(brevo_api_key) >= 7 else brevo_api_key}...")
+            
+            url = "https://api.brevo.com/v3/smtp/email"
+            payload = {
+                "sender": {"name": "Formsahayak", "email": sender_email},
+                "to": [{"email": data.email}],
                 "subject": "Reset Password OTP",
-                "html": f"<p>Your password reset OTP is <strong>{otp}</strong>. It is valid for 10 minutes.</p>"
-            },
-            timeout=15
-        )
-        
-        if response.status_code != 200:
-            logger.error(f"Resend API error response: {response.text}")
-            raise Exception(f"Resend API failed with status {response.status_code}: {response.text}")
+                "htmlContent": f"<p>Your password reset OTP is <strong>{otp}</strong>. It is valid for 10 minutes.</p>"
+            }
+            headers = {
+                "api-key": brevo_api_key,
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+            }
+            response = requests.post(url, headers=headers, json=payload, timeout=15)
+            
+            if response.status_code not in (200, 201):
+                logger.error(f"Brevo API error response: {response.text}")
+                raise Exception(f"Brevo API failed with status {response.status_code}: {response.text}")
+                
+            logger.info("Brevo API email sent successfully!")
+            
+        else:
+            api_key_to_use = resend_api_key if resend_api_key else "re_your_api_key_here"
+            logger.info(f"Attempting to send OTP via Resend. Receiver: {data.email}")
+            logger.info(f"Resend API key length: {len(api_key_to_use)}")
+            logger.info(f"Resend API key starts with: {api_key_to_use[:7] if len(api_key_to_use) >= 7 else api_key_to_use}...")
+            
+            response = requests.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {api_key_to_use}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "from": "Formsahayak <onboarding@resend.dev>",
+                    "to": [data.email],
+                    "subject": "Reset Password OTP",
+                    "html": f"<p>Your password reset OTP is <strong>{otp}</strong>. It is valid for 10 minutes.</p>"
+                },
+                timeout=15
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"Resend API error response: {response.text}")
+                raise Exception(f"Resend API failed with status {response.status_code}: {response.text}")
 
-        logger.info("Resend API email sent successfully!")
+            logger.info("Resend API email sent successfully!")
 
     except Exception as e:
         logger.exception("Send OTP execution failed")
