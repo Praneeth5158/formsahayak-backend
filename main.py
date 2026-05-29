@@ -659,10 +659,25 @@ async def upload_document(
         matched_boxes = []
         for term in parentheses_terms:
             term_clean = term.strip().lower()
+            
+            # 1. Primary: Exact match to specific field or exact label
+            exact_matches = []
             for box in ocr_boxes:
                 box_text = box["text"].lower()
-                if term_clean in box_text or box_text in term_clean or (term_clean == "phone" and "mobile" in box_text) or (term_clean == "dob" and "date" in box_text):
-                    matched_boxes.append(box)
+                if box_text == f"[field: {term_clean}]" or box_text == term_clean:
+                    exact_matches.append(box)
+                    
+            if exact_matches:
+                matched_boxes.extend(exact_matches)
+            else:
+                # 2. Secondary fallback: Substring mapping but ignoring unrelated fields
+                for box in ocr_boxes:
+                    box_text = box["text"].lower()
+                    # If it's a field box, ensure it doesn't belong to a different specific field
+                    if "[field:" in box_text and f"[field: {term_clean}]" not in box_text:
+                        continue
+                    if term_clean in box_text or box_text in term_clean or (term_clean == "phone" and "mobile" in box_text) or (term_clean == "dob" and "date" in box_text):
+                        matched_boxes.append(box)
 
         # Keyword matching fallback
         if not matched_boxes:
@@ -672,6 +687,9 @@ async def upload_document(
                 if kw in step_lower:
                     for box in ocr_boxes:
                         box_text = box["text"].lower()
+                        # Avoid over-highlighting other fields (e.g. Father's Name when kw is name)
+                        if "[field:" in box_text and f"[field: {kw}]" not in box_text:
+                            continue
                         if kw in box_text or (kw == "phone" and "mobile" in box_text) or (kw == "dob" and "date" in box_text):
                             matched_boxes.append(box)
 
