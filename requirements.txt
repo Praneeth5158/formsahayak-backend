@@ -44,4 +44,3 @@ python-dotenv==1.1.1
 
 pytesseract==0.3.10
 edge-tts
-google-generativeai

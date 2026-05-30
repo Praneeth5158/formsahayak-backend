@@ -2,7 +2,6 @@ from fastapi.middleware.cors import CORSMiddleware
 import logging
 import shutil
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, BackgroundTasks, Depends
-import google.generativeai as genai
 import io
 import json
 import string
@@ -47,14 +46,6 @@ if not GROQ_API_KEY:
     raise Exception("GROQ_API_KEY not found")
 
 client = Groq(api_key=GROQ_API_KEY)
-
-# Configure Gemini SDK
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY.strip().strip("'\""))
-    logger.info("Gemini SDK successfully configured.")
-else:
-    logger.warning("GEMINI_API_KEY not found in environment variables. Gemini calls might fail.")
 
 # Database Session Dependency
 def get_db():
@@ -483,7 +474,7 @@ async def upload_document(
                 """
                 
                 response = client.chat.completions.create(
-                    model="llama-3.2-11b-vision-preview",
+                    model="meta-llama/llama-4-scout-17b-16e-instruct",
                     messages=[
                         {
                             "role": "user",
@@ -511,9 +502,15 @@ async def upload_document(
                     response_text = response_text.split("```")[1].split("```")[0].strip()
                 
                 try:
-                    data = json.loads(response_text)
+                    # Parse with strict=False to tolerate literal newlines and control characters inside JSON strings
+                    data = json.loads(response_text, strict=False)
                     guidance = data.get("guidance", "Form uploaded successfully.")
-                    extracted_text = data.get("extracted_text", "")
+                    raw_extracted = data.get("extracted_text", "")
+                    # Convert to string cleanly if LLM returned dictionary/list
+                    if isinstance(raw_extracted, (dict, list)):
+                        extracted_text = json.dumps(raw_extracted, ensure_ascii=False, indent=2)
+                    else:
+                        extracted_text = str(raw_extracted)
                 except Exception as e_json:
                     logger.warning(f"Failed to parse JSON directly from Groq: {e_json}. Using raw text as guidance.")
                     guidance = response_text
