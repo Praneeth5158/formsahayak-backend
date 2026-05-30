@@ -60,8 +60,35 @@ app = FastAPI()
 @app.on_event("startup")
 def on_startup():
     from models import Base
-    from db import engine
+    from db import engine, SessionLocal
     Base.metadata.create_all(bind=engine)
+    
+    # Self-heal missing columns in feedback table
+    db = SessionLocal()
+    try:
+        from sqlalchemy import text
+        # Try to add rating column if missing
+        try:
+            db.execute(text("ALTER TABLE feedback ADD COLUMN rating VARCHAR(50) NULL;"))
+            db.commit()
+            logger.info("Database: Added missing 'rating' column to feedback table.")
+        except Exception as e_rating:
+            db.rollback()
+            logger.info(f"Database: 'rating' column already exists or checked. Details: {e_rating}")
+            
+        # Try to add feedback_text column if missing
+        try:
+            db.execute(text("ALTER TABLE feedback ADD COLUMN feedback_text TEXT NULL;"))
+            db.commit()
+            logger.info("Database: Added missing 'feedback_text' column to feedback table.")
+        except Exception as e_text:
+            db.rollback()
+            logger.info(f"Database: 'feedback_text' column already exists or checked. Details: {e_text}")
+    except Exception as e:
+        logger.warning(f"Self-healing database migration failed: {e}")
+    finally:
+        db.close()
+        
     logger.info("MySQL tables verified/created on startup.")
 app.mount("/audio", StaticFiles(directory="audio"), name="audio")
 
@@ -504,7 +531,17 @@ async def upload_document(
                 try:
                     # Parse with strict=False to tolerate literal newlines and control characters inside JSON strings
                     data = json.loads(response_text, strict=False)
-                    guidance = data.get("guidance", "Form uploaded successfully.")
+                    raw_guidance = data.get("guidance", "Form uploaded successfully.")
+                    
+                    # Convert to string cleanly if LLM returned dictionary/list for guidance
+                    if isinstance(raw_guidance, (dict, list)):
+                        if isinstance(raw_guidance, list):
+                            guidance = "\n".join(str(item) for item in raw_guidance)
+                        else:
+                            guidance = json.dumps(raw_guidance, ensure_ascii=False, indent=2)
+                    else:
+                        guidance = str(raw_guidance)
+                        
                     raw_extracted = data.get("extracted_text", "")
                     # Convert to string cleanly if LLM returned dictionary/list
                     if isinstance(raw_extracted, (dict, list)):
@@ -513,7 +550,7 @@ async def upload_document(
                         extracted_text = str(raw_extracted)
                 except Exception as e_json:
                     logger.warning(f"Failed to parse JSON directly from Groq: {e_json}. Using raw text as guidance.")
-                    guidance = response_text
+                    guidance = str(response_text)
                     extracted_text = "OCR Text processed via Groq Vision."
 
             except Exception as e_groq:
