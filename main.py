@@ -465,13 +465,13 @@ async def upload_document(
         extracted_text = ""
         guidance = "Unable to process document."
 
-        # Handle image processing via Gemini 1.5 Flash
+        # Handle image processing via Groq Vision
         if file.filename.lower().endswith((".png", ".jpg", ".jpeg")):
             try:
-                # Open image using Pillow
-                image = PILImage.open(file_path)
+                import base64
+                with open(file_path, "rb") as image_file:
+                    base64_image = base64.b64encode(image_file.read()).decode("utf-8")
                 
-                model = genai.GenerativeModel("gemini-1.5-flash")
                 prompt = f"""
                 You are FormSahayak, a multilingual AI designed to help old-age people fill out official forms.
                 Analyze this form image:
@@ -481,8 +481,28 @@ async def upload_document(
                 
                 Return JSON format with keys "guidance" and "extracted_text".
                 """
-                response = model.generate_content([image, prompt])
-                response_text = response.text
+                
+                response = client.chat.completions.create(
+                    model="llama-3.2-11b-vision-preview",
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": prompt
+                                },
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/jpeg;base64,{base64_image}"
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                )
+                response_text = response.choices[0].message.content
                 
                 # Clean JSON markdown blocks if present
                 if "```json" in response_text:
@@ -495,17 +515,17 @@ async def upload_document(
                     guidance = data.get("guidance", "Form uploaded successfully.")
                     extracted_text = data.get("extracted_text", "")
                 except Exception as e_json:
-                    logger.warning(f"Failed to parse JSON directly from Gemini: {e_json}. Using raw text as guidance.")
+                    logger.warning(f"Failed to parse JSON directly from Groq: {e_json}. Using raw text as guidance.")
                     guidance = response_text
-                    extracted_text = "OCR Text processed via Multimodal Gemini."
+                    extracted_text = "OCR Text processed via Groq Vision."
 
-            except Exception as e_gemini:
-                logger.exception("Gemini API call failed")
-                raise Exception(f"Gemini AI processing failed: {str(e_gemini)}")
+            except Exception as e_groq:
+                logger.exception("Groq Vision API call failed")
+                raise Exception(f"Groq Vision processing failed: {str(e_groq)}")
 
         elif file.filename.lower().endswith(".pdf"):
             extracted_text = "PDF uploaded"
-            guidance = "PDF forms processing not fully supported via Gemini multimodal currently. Please upload images."
+            guidance = "PDF forms processing not fully supported via Groq Vision currently. Please upload images."
 
         # Predict immediate URLs for instant response
         file_url = f"https://formsahayak-backend.onrender.com/uploads/{filename}"
