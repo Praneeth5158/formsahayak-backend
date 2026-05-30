@@ -561,6 +561,54 @@ async def upload_document(
             extracted_text = "PDF uploaded"
             guidance = "PDF forms processing not fully supported via Groq Vision currently. Please upload images."
 
+        # Detect physical input boxes using OpenCV (extremely fast, runs in ~10ms!)
+        contour_boxes = []
+        try:
+            import cv2
+            image_cv = cv2.imread(file_path)
+            if image_cv is not None:
+                gray = cv2.cvtColor(image_cv, cv2.COLOR_BGR2GRAY)
+                # Binary inverse thresholding to highlight empty input box borders
+                _, thresh_inv = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
+                contours, _ = cv2.findContours(thresh_inv, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+                
+                raw_boxes = []
+                for cnt in contours:
+                    x, y, w, h = cv2.boundingRect(cnt)
+                    aspect_ratio = float(w) / h
+                    # Filter for typical input field sizes
+                    if 25 < w < 800 and 12 < h < 80:
+                        if aspect_ratio > 1.1:
+                            raw_boxes.append((x, y, w, h))
+                
+                # De-duplicate nested or heavily overlapping bounding boxes
+                distinct_boxes = []
+                for x, y, w, h in raw_boxes:
+                    keep = True
+                    for dx, dy, dw, dh in distinct_boxes:
+                        if abs(x - dx) < 15 and abs(y - dy) < 15 and abs(w - dw) < 25 and abs(h - dh) < 25:
+                            keep = False
+                            break
+                    if keep:
+                        distinct_boxes.append((x, y, w, h))
+                
+                # Convert to standard OCR box format
+                for x, y, w, h in distinct_boxes:
+                    contour_boxes.append({
+                        "text": "Input Field",
+                        "x": int(x),
+                        "y": int(y),
+                        "w": int(w),
+                        "h": int(h),
+                        "confidence": 95.0
+                    })
+                
+                # Sort boxes by Y-coordinate (top to bottom)
+                contour_boxes.sort(key=lambda b: (b["y"], b["x"]))
+                logger.info(f"OpenCV Box Detection: Successfully found {len(contour_boxes)} input box contours.")
+        except Exception as e_cv:
+            logger.warning(f"Fast OpenCV contour box detection failed: {e_cv}")
+
         # Predict immediate URLs for instant response
         file_url = f"https://formsahayak-backend.onrender.com/uploads/{filename}"
         audio_url = f"https://formsahayak-backend.onrender.com/audio/{filename}.mp3"
@@ -569,12 +617,37 @@ async def upload_document(
         # Construct safe guidance steps for UI mapping compatibilities
         guidance_steps = []
         raw_steps = [s.strip() for s in re.split(r'[\n\.]+', guidance) if s.strip()]
-        for idx, step in enumerate(raw_steps):
+        
+        # Filter raw steps into actual instructions and general headers/footers
+        guideline_steps = []
+        general_info_steps = []
+        for s in raw_steps:
+            # Numbered steps (starting with digit or step keyword) are actual guidelines
+            if re.match(r'^(step|\d+)', s.lower().strip()):
+                guideline_steps.append(s)
+            else:
+                general_info_steps.append(s)
+                
+        # 1. Add leading general info
+        for step_text in general_info_steps:
             guidance_steps.append({
-                "step_index": idx + 1,
-                "step_text": step,
+                "step_index": len(guidance_steps) + 1,
+                "step_text": step_text,
                 "matched_fields": ["General"],
                 "ocr_boxes": []
+            })
+            
+        # 2. Map numbered instructions to sorted physical input boxes
+        for i, step_text in enumerate(guideline_steps):
+            matched_boxes = []
+            if i < len(contour_boxes):
+                matched_boxes.append(contour_boxes[i])
+                
+            guidance_steps.append({
+                "step_index": len(guidance_steps) + 1,
+                "step_text": step_text,
+                "matched_fields": ["Input Box"],
+                "ocr_boxes": matched_boxes
             })
 
         # Save record to database
@@ -614,7 +687,7 @@ async def upload_document(
             "audio_path": audio_url,
             "pdf_file": pdf_url,
             "pdf_path": pdf_url,
-            "ocr_boxes": [],
+            "ocr_boxes": contour_boxes,
             "extracted_text": extracted_text,
             "uploaded_image_path": file_url,
             "guidance_steps": guidance_steps
