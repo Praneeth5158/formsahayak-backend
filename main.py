@@ -1,10 +1,16 @@
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 import shutil
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, BackgroundTasks, Depends
+import google.generativeai as genai
+import io
+import json
+import string
+from sqlalchemy.orm import Session
 from fastapi.staticfiles import StaticFiles
 from gtts import gTTS
 from pydantic import BaseModel, EmailStr
+from typing import Optional
 from PIL import Image as PILImage
 from db import SessionLocal
 from models import Document, User, Feedback
@@ -42,8 +48,30 @@ if not GROQ_API_KEY:
 
 client = Groq(api_key=GROQ_API_KEY)
 
+# Configure Gemini SDK
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY.strip().strip("'\""))
+    logger.info("Gemini SDK successfully configured.")
+else:
+    logger.warning("GEMINI_API_KEY not found in environment variables. Gemini calls might fail.")
+
+# Database Session Dependency
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 app = FastAPI()
+
+@app.on_event("startup")
+def on_startup():
+    from models import Base
+    from db import engine
+    Base.metadata.create_all(bind=engine)
+    logger.info("MySQL tables verified/created on startup.")
 app.mount("/audio", StaticFiles(directory="audio"), name="audio")
 
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
@@ -140,13 +168,13 @@ class Login(BaseModel):
 # ---------------- FEEDBACK MODEL ----------------
 
 class FeedbackRequest(BaseModel):
-    user_email: str
-    app_experience: str = None
-    voice_guidance_helpful: str = None
-    recommend_app: str = None
-    additional_comments: str = None
-    rating: str = None
-    feedback_text: str = None
+    user_email: Optional[str] = None
+    app_experience: Optional[str] = "Excellent"
+    voice_guidance_helpful: Optional[str] = "Yes"
+    recommend_app: Optional[str] = "Yes"
+    additional_comments: Optional[str] = None
+    rating: Optional[str] = None
+    feedback_text: Optional[str] = None
 
 @app.post("/login")
 def login(user: Login):
@@ -342,8 +370,6 @@ def generate_pdf_report(
         )
     )
 
-    elements.append(Spacer(1, 15))
-
     elements.append(
         Paragraph(
             "<b>AI Guidance:</b>",
@@ -362,271 +388,30 @@ def generate_pdf_report(
 
     return pdf_path
 
-# ---------------- DOCUMENT UPLOAD ----------------
-
-@app.post("/upload-document")
-async def upload_document(
-    user_email: str = Form(...),
-    language: str = Form(None),
-    file: UploadFile = File(...)
+# ---------------- BACKGROUND MEDIA GENERATION ----------------
+async def generate_media_background(
+    filename: str,
+    file_path: str,
+    guidance_text: str,
+    extracted_text: str,
+    language: str
 ):
-    import numpy as np
-
-    filename = f"{int(time.time())}_{file.filename}"
-    file_path = os.path.join(UPLOAD_FOLDER, filename)
-
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-
-    extracted_text = ""
-    ocr_boxes = []
-    detected_fields_count = 0
-
-    logger.info(f"FILE UPLOADED: {file.filename}")
-    logger.info(f"LANGUAGE RECEIVED: {language}")
-
-    if file.filename.lower().endswith((".png", ".jpg", ".jpeg")):
-        try:
-            image = cv2.imread(file_path)
-            orig_h, orig_w = image.shape[:2]
-
-            # 1. Advanced Resize/Scaling (Target width 2000px for optimal OCR character height)
-            target_width = 2000
-            scale_factor = 1.0
-            if orig_w < target_width:
-                scale_factor = target_width / orig_w
-                width = int(orig_w * scale_factor)
-                height = int(orig_h * scale_factor)
-                image_resized = cv2.resize(image, (width, height), interpolation=cv2.INTER_CUBIC)
-            else:
-                image_resized = image.copy()
-
-            # 2. Grayscale Conversion
-            gray = cv2.cvtColor(image_resized, cv2.COLOR_BGR2GRAY)
-
-            # 3. Bilateral Filtering Denoising (Keep text edges sharp, clean noise)
-            denoised = cv2.bilateralFilter(gray, 9, 75, 75)
-
-            # 4. Sharpening (Filters out scan blur and heightens text contrast)
-            sharpen_kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
-            sharpened = cv2.filter2D(denoised, -1, sharpen_kernel)
-
-            # 5. Gaussian Blur (Attenuates remaining high-frequency halftone/scanner noise)
-            blurred = cv2.GaussianBlur(sharpened, (3, 3), 0)
-
-            # 6. Adaptive Thresholding (Inverted for contours, standard for OCR)
-            thresh_inv = cv2.adaptiveThreshold(
-                blurred,
-                255,
-                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                cv2.THRESH_BINARY_INV,
-                15,
-                10
-            )
-
-            processed_ocr = cv2.adaptiveThreshold(
-                blurred,
-                255,
-                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                cv2.THRESH_BINARY,
-                15,
-                10
-            )
-
-            # 7. Morphology Closing (Joins broken characters)
-            kernel_close = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-            processed_ocr = cv2.morphologyEx(processed_ocr, cv2.MORPH_CLOSE, kernel_close)
-
-            # 8. Run Tesseract OCR on processed image
-            # Dual PSM Engine Configurations: Merging PSM 6 (uniform block) and PSM 11 (sparse text labels)
-            config_psm6 = r'--oem 3 --psm 6'
-            config_psm11 = r'--oem 3 --psm 11'
-
-            data_psm6 = pytesseract.image_to_data(
-                processed_ocr,
-                config=config_psm6,
-                output_type=pytesseract.Output.DICT
-            )
-
-            data_psm11 = pytesseract.image_to_data(
-                processed_ocr,
-                config=config_psm11,
-                output_type=pytesseract.Output.DICT
-            )
-
-            seen_boxes = []  # Keep track of x, y, w, h in original coordinates to prevent duplicates
-            extracted_lines = []
-
-            def add_ocr_box(word_text, rx, ry, rw, rh, conf):
-                word_clean = word_text.strip()
-                if not word_clean or conf < 20:  # Kept lower confidence filter to catch small/faint text
-                    return
-
-                # Map coordinates back to original image size
-                x = int(rx / scale_factor)
-                y = int(ry / scale_factor)
-                w = int(rw / scale_factor)
-                h = int(rh / scale_factor)
-
-                # Overlap check
-                is_duplicate = False
-                for sx, sy, sw, sh in seen_boxes:
-                    if abs(x - sx) < 15 and abs(y - sy) < 15 and abs(w - sw) < 25 and abs(h - sh) < 25:
-                        is_duplicate = True
-                        break
-
-                if not is_duplicate:
-                    ocr_boxes.append({
-                        "text": word_clean,
-                        "x": x,
-                        "y": y,
-                        "w": w,
-                        "h": h,
-                        "confidence": float(conf)
-                    })
-                    seen_boxes.append((x, y, w, h))
-                    extracted_lines.append(word_clean)
-
-            # Process Primary PSM 6
-            for i in range(len(data_psm6["text"])):
-                add_ocr_box(
-                    data_psm6["text"][i],
-                    data_psm6["left"][i],
-                    data_psm6["top"][i],
-                    data_psm6["width"][i],
-                    data_psm6["height"][i],
-                    data_psm6["conf"][i]
-                )
-
-            # Process Secondary PSM 11 to catch sparse missing labels
-            for i in range(len(data_psm11["text"])):
-                add_ocr_box(
-                    data_psm11["text"][i],
-                    data_psm11["left"][i],
-                    data_psm11["top"][i],
-                    data_psm11["width"][i],
-                    data_psm11["height"][i],
-                    data_psm11["conf"][i]
-                )
-
-            # 9. Contour Detection to Identify Physical Input Boxes & Underlines
-            contours, _ = cv2.findContours(thresh_inv, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            contour_boxes = []
-            for cnt in contours:
-                x, y, w, h = cv2.boundingRect(cnt)
-                aspect_ratio = float(w) / h
-                if 40 < w < 900 and 15 < h < 120:
-                    if aspect_ratio > 1.2:
-                        contour_boxes.append({"x": x, "y": y, "w": w, "h": h})
-
-            # Map contours to closest OCR label
-            detected_fields_count = len(contour_boxes)
-            for cb in contour_boxes:
-                cx, cy, cw, ch = cb["x"], cb["y"], cb["w"], cb["h"]
-                best_label = "Input Field"
-                min_dist = 999999
-
-                # Match against ocr_boxes
-                for box in ocr_boxes:
-                    bx = box["x"] * scale_factor
-                    by = box["y"] * scale_factor
-                    # Text box to the left
-                    if bx < cx and (cx - bx) < 180 and abs(by - cy) < 40:
-                        dist = cx - bx
-                        if dist < min_dist:
-                            min_dist = dist
-                            best_label = box["text"]
-                    # Text box above
-                    elif by < cy and (cy - by) < 50 and abs(bx - cx) < 100:
-                        dist = cy - by
-                        if dist < min_dist:
-                            min_dist = dist
-                            best_label = box["text"]
-
-                ox = int(cx / scale_factor)
-                oy = int(cy / scale_factor)
-                ow = int(cw / scale_factor)
-                oh = int(ch / scale_factor)
-
-                ocr_boxes.append({
-                    "text": f"[Field: {best_label}]",
-                    "x": ox,
-                    "y": oy,
-                    "w": ow,
-                    "h": oh,
-                    "confidence": 95.0
-                })
-
-            extracted_text = "\n".join(extracted_lines)
-
-        except Exception as e:
-            logger.exception("OCR pipeline failed, falling back to Vision LLM")
-            extracted_text = ""
-            try:
-                import base64
-                with open(file_path, "rb") as image_file:
-                    base64_image = base64.b64encode(image_file.read()).decode("utf-8")
-
-                vision_response = client.chat.completions.create(
-                    model="meta-llama/llama-4-scout-17b-16e-instruct",
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": "Explain this form in very simple step-by-step instructions for common Indian people, rural users, and old-age users. Use simple English and short points."
-                                },
-                                {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": f"data:image/jpeg;base64,{base64_image}"
-                                    }
-                                }
-                            ]
-                        }
-                    ]
-                )
-                extracted_text = vision_response.choices[0].message.content
-            except Exception as e_vision:
-                logger.exception("Vision fallback also failed")
-                extracted_text = ""
-
-    elif file.filename.lower().endswith(".pdf"):
-        extracted_text = "PDF uploaded"
-
-    # 10. Generate Multilingual AI Guidance
-    if extracted_text.strip() == "":
-        guidance_text = "Unable to detect text clearly."
-    else:
-        guidance_text = generate_guidance(extracted_text, language)
-
-    # 11. Speech Generation with Text Cleaning
-    audio_filename = filename + ".mp3"
-    audio_path = os.path.join(AUDIO_FOLDER, audio_filename)
-
-    pdf_path = generate_pdf_report(
-        filename,
-        extracted_text,
-        guidance_text,
-        file_path
-    )
-
-    lang_code = "en"
-    if language == "Telugu":
-        lang_code = "te"
-    elif language == "Hindi":
-        lang_code = "hi"
-    elif language == "Tamil":
-        lang_code = "ta"
-
     try:
-        # Natural Voice Generation - cleaning text before passing into TTS
+        audio_filename = filename + ".mp3"
+        audio_path = os.path.join(AUDIO_FOLDER, audio_filename)
+        
+        lang_code = "en"
+        if language == "Telugu":
+            lang_code = "te"
+        elif language == "Hindi":
+            lang_code = "hi"
+        elif language == "Tamil":
+            lang_code = "ta"
+            
         cleaned_guidance = clean_text_for_tts(guidance_text)
-        print("TTS INPUT:", cleaned_guidance)
         short_text = cleaned_guidance[:1500]
-
-        # Use edge-tts for premium neural voices
+        
+        # Edge-TTS voice generation
         try:
             import edge_tts
             voice_map = {
@@ -638,132 +423,156 @@ async def upload_document(
             voice = voice_map.get(language, "en-US-AvaNeural")
             communicate = edge_tts.Communicate(short_text, voice)
             await communicate.save(audio_path)
-            logger.info(f"Edge-TTS voice successfully generated: {voice}")
+            logger.info(f"Edge-TTS voice successfully generated in background: {voice}")
         except Exception as e_edge:
-            logger.warning(f"edge-tts failed: {e_edge}, falling back to gTTS")
-            # Fallback to standard gTTS
-            tts = gTTS(
-                text=short_text,
-                lang=lang_code
-            )
+            logger.warning(f"edge-tts failed in background: {e_edge}, falling back to gTTS")
+            from gtts import gTTS
+            tts = gTTS(text=short_text, lang=lang_code)
             tts.save(audio_path)
-    except Exception as e:
-        logger.exception("Audio generation failed completely")
-        audio_path = ""
-
-    # 12. Dynamic Highlights & Spoken Guidance Synchronization Mapping
-    guidance_steps = []
-    raw_steps = [s.strip() for s in re.split(r'[\n\.]+', guidance_text) if s.strip()]
-    for idx, step in enumerate(raw_steps):
-        parentheses_terms = re.findall(r'\(([^)]+)\)', step)
-        matched_boxes = []
-        for term in parentheses_terms:
-            term_clean = term.strip().lower()
             
-            # 1. Primary: Exact match to specific field or exact label
-            exact_matches = []
-            for box in ocr_boxes:
-                box_text = box["text"].lower()
-                if box_text == f"[field: {term_clean}]" or box_text == term_clean:
-                    exact_matches.append(box)
-                    
-            if exact_matches:
-                matched_boxes.extend(exact_matches)
-            else:
-                # 2. Secondary fallback: Substring mapping but ignoring unrelated fields
-                for box in ocr_boxes:
-                    box_text = box["text"].lower()
-                    # If it's a field box, ensure it doesn't belong to a different specific field
-                    if "[field:" in box_text and f"[field: {term_clean}]" not in box_text:
-                        continue
-                    if term_clean in box_text or box_text in term_clean or (term_clean == "phone" and "mobile" in box_text) or (term_clean == "dob" and "date" in box_text):
-                        matched_boxes.append(box)
+        # PDF generation
+        generate_pdf_report(
+            filename,
+            extracted_text,
+            guidance_text,
+            file_path
+        )
+        logger.info(f"Background media generation completed for {filename}")
+        
+    except Exception as e:
+        logger.exception(f"Background media generation failed for {filename}: {e}")
 
-        # Keyword matching fallback
-        if not matched_boxes:
-            common_keywords = ["name", "email", "phone", "mobile", "address", "dob", "date", "signature", "account", "age"]
-            step_lower = step.lower()
-            for kw in common_keywords:
-                if kw in step_lower:
-                    for box in ocr_boxes:
-                        box_text = box["text"].lower()
-                        # Avoid over-highlighting other fields (e.g. Father's Name when kw is name)
-                        if "[field:" in box_text and f"[field: {kw}]" not in box_text:
-                            continue
-                        if kw in box_text or (kw == "phone" and "mobile" in box_text) or (kw == "dob" and "date" in box_text):
-                            matched_boxes.append(box)
 
-        # De-duplicate matched boxes
-        unique_matches = []
-        seen_match = set()
-        for box in matched_boxes:
-            box_key = (box["x"], box["y"], box["w"], box["h"])
-            if box_key not in seen_match:
-                seen_match.add(box_key)
-                unique_matches.append(box)
+# ---------------- DOCUMENT UPLOAD ----------------
 
-        guidance_steps.append({
-            "step_index": idx + 1,
-            "step_text": step,
-            "matched_fields": parentheses_terms if parentheses_terms else ["General"],
-            "ocr_boxes": unique_matches
-        })
+@app.post("/upload-document")
+async def upload_document(
+    background_tasks: BackgroundTasks,
+    user_email: str = Form(...),
+    language: str = Form(None),
+    file: UploadFile = File(...)
+):
+    try:
+        filename = f"{int(time.time())}_{file.filename}"
+        file_path = os.path.join(UPLOAD_FOLDER, filename)
 
-    # Save to Database
-    india = timezone("Asia/Kolkata")
-    current_time = datetime.now(india)
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
 
-    db = SessionLocal()
-    file_url = f"https://formsahayak-backend.onrender.com/uploads/{filename}"
-    audio_url = f"https://formsahayak-backend.onrender.com/audio/{audio_filename}"
-    pdf_url = f"https://formsahayak-backend.onrender.com/pdfs/{filename}.pdf"
+        logger.info(f"FILE UPLOADED: {file.filename}")
+        logger.info(f"LANGUAGE RECEIVED: {language}")
 
-    new_doc = Document(
-        user_email=user_email,
-        file_name=filename,
-        file_path=file_url,
-        extracted_text=extracted_text,
-        guidance_text=guidance_text,
-        audio_path=audio_url,
-        pdf_path=pdf_url,
-        created_at=current_time
-    )
-    db.add(new_doc)
-    db.commit()
-    db.close()
+        extracted_text = ""
+        guidance = "Unable to process document."
 
-    # Formulate urls for response
-    audio_response_url = ""
-    if audio_path != "":
-        audio_response_url = f"https://formsahayak-backend.onrender.com/audio/{audio_filename}"
+        # Handle image processing via Gemini 1.5 Flash
+        if file.filename.lower().endswith((".png", ".jpg", ".jpeg")):
+            try:
+                # Open image using Pillow
+                image = PILImage.open(file_path)
+                
+                model = genai.GenerativeModel("gemini-1.5-flash")
+                prompt = f"""
+                You are FormSahayak, a multilingual AI designed to help old-age people fill out official forms.
+                Analyze this form image:
+                1. Perform high-precision OCR to extract visible fields.
+                2. Translate key fields into {language if language else 'English'}.
+                3. Write friendly, simplified, step-by-step guidelines separated by newlines.
+                
+                Return JSON format with keys "guidance" and "extracted_text".
+                """
+                response = model.generate_content([image, prompt])
+                response_text = response.text
+                
+                # Clean JSON markdown blocks if present
+                if "```json" in response_text:
+                    response_text = response_text.split("```json")[1].split("```")[0].strip()
+                elif "```" in response_text:
+                    response_text = response_text.split("```")[1].split("```")[0].strip()
+                
+                try:
+                    data = json.loads(response_text)
+                    guidance = data.get("guidance", "Form uploaded successfully.")
+                    extracted_text = data.get("extracted_text", "")
+                except Exception as e_json:
+                    logger.warning(f"Failed to parse JSON directly from Gemini: {e_json}. Using raw text as guidance.")
+                    guidance = response_text
+                    extracted_text = "OCR Text processed via Multimodal Gemini."
 
-    # Print backend debug verification logs exactly as required
-    logger.info(f"OCR BOXES DETECTED: {len(ocr_boxes)}")
-    logger.info(f"LANGUAGE RECEIVED: {language}")
-    logger.info(f"TTS LANGUAGE: {lang_code}")
-    logger.info(f"OCR TEXT LENGTH: {len(extracted_text)}")
-    logger.info(f"DETECTED CONTOURS COUNT: {detected_fields_count}")
+            except Exception as e_gemini:
+                logger.exception("Gemini API call failed")
+                raise Exception(f"Gemini AI processing failed: {str(e_gemini)}")
 
-    print(f"OCR BOXES DETECTED: {len(ocr_boxes)}")
-    print("OCR BOXES:", len(ocr_boxes))
-    print("OCR BOXES SENT:", len(ocr_boxes))
-    print(f"LANGUAGE RECEIVED: {language}")
-    print(f"TTS LANGUAGE: {lang_code}")
-    print(f"OCR TEXT LENGTH: {len(extracted_text)}")
+        elif file.filename.lower().endswith(".pdf"):
+            extracted_text = "PDF uploaded"
+            guidance = "PDF forms processing not fully supported via Gemini multimodal currently. Please upload images."
 
-    return {
-        "message": "Uploaded & processed successfully",
-        "guidance": guidance_text,
-        "guidance_text": guidance_text,
-        "audio_file": audio_response_url,
-        "audio_path": audio_response_url,
-        "pdf_file": f"https://formsahayak-backend.onrender.com/{pdf_path.replace(chr(92), '/')}",
-        "pdf_path": f"https://formsahayak-backend.onrender.com/{pdf_path.replace(chr(92), '/')}",
-        "ocr_boxes": ocr_boxes,
-        "extracted_text": extracted_text,
-        "uploaded_image_path": file_url,
-        "guidance_steps": guidance_steps
-    }
+        # Predict immediate URLs for instant response
+        file_url = f"https://formsahayak-backend.onrender.com/uploads/{filename}"
+        audio_url = f"https://formsahayak-backend.onrender.com/audio/{filename}.mp3"
+        pdf_url = f"https://formsahayak-backend.onrender.com/pdfs/{filename}.pdf"
+
+        # Construct safe guidance steps for UI mapping compatibilities
+        guidance_steps = []
+        raw_steps = [s.strip() for s in re.split(r'[\n\.]+', guidance) if s.strip()]
+        for idx, step in enumerate(raw_steps):
+            guidance_steps.append({
+                "step_index": idx + 1,
+                "step_text": step,
+                "matched_fields": ["General"],
+                "ocr_boxes": []
+            })
+
+        # Save record to database
+        india = timezone("Asia/Kolkata")
+        current_time = datetime.now(india)
+
+        db = SessionLocal()
+        new_doc = Document(
+            user_email=user_email,
+            file_name=filename,
+            file_path=file_url,
+            extracted_text=extracted_text,
+            guidance_text=guidance,
+            audio_path=audio_url,
+            pdf_path=pdf_url,
+            created_at=current_time
+        )
+        db.add(new_doc)
+        db.commit()
+        db.close()
+
+        # Add media compilation tasks to BackgroundTasks
+        background_tasks.add_task(
+            generate_media_background,
+            filename=filename,
+            file_path=file_path,
+            guidance_text=guidance,
+            extracted_text=extracted_text,
+            language=language if language else 'English'
+        )
+
+        return {
+            "message": "Uploaded & processed successfully",
+            "guidance": guidance,
+            "guidance_text": guidance,
+            "audio_file": audio_url,
+            "audio_path": audio_url,
+            "pdf_file": pdf_url,
+            "pdf_path": pdf_url,
+            "ocr_boxes": [],
+            "extracted_text": extracted_text,
+            "uploaded_image_path": file_url,
+            "guidance_steps": guidance_steps
+        }
+
+    except Exception as e:
+        logger.exception("Upload processing failed")
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
+
 
 # ---------------- PROFILE API ----------------
 
@@ -982,6 +791,30 @@ def change_password(data: ChangePasswordRequest):
     return {
         "message": "Password updated successfully"
     }
+
+
+# ---------------- FORGOT PASSWORD API ----------------
+
+@app.post("/forgot-password")
+def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == request.email).first()
+    if not user:
+        raise HTTPException(
+            status_code=404, 
+            detail="Email address not found. Please register first."
+        )
+    
+    try:
+        temp_pass = "".join(random.choices(string.ascii_letters + string.digits, k=8))
+        user.password = temp_pass # Plain text to align with the database's existing login and signup schema
+        db.commit()
+        return {
+            "status": "success",
+            "message": f"A temporary password has been successfully generated for {request.email}. (Demo Password: {temp_pass})"
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error resetting password: {str(e)}")
 
 
 # ---------------- SEND OTP API ----------------
