@@ -18,6 +18,7 @@ import os
 if os.name == 'nt':
     pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 import cv2
+import numpy as np
 import re
 import time
 from dotenv import load_dotenv
@@ -477,177 +478,290 @@ async def upload_document(
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
+        extracted_text = ""
+        ocr_boxes = []
+        detected_fields_count = 0
+
         logger.info(f"FILE UPLOADED: {file.filename}")
         logger.info(f"LANGUAGE RECEIVED: {language}")
 
-        extracted_text = ""
-        guidance = "Unable to process document."
-
-        # Handle image processing via Groq Vision
         if file.filename.lower().endswith((".png", ".jpg", ".jpeg")):
             try:
-                import base64
-                with open(file_path, "rb") as image_file:
-                    base64_image = base64.b64encode(image_file.read()).decode("utf-8")
-                
-                prompt = f"""
-                You are FormSahayak, a multilingual AI designed to help old-age people fill out official forms.
-                Analyze this form image:
-                1. Perform high-precision OCR to extract visible fields.
-                2. Translate key fields into {language if language else 'English'}.
-                3. Write friendly, simplified, step-by-step guidelines separated by newlines.
-                
-                Return JSON format with keys "guidance" and "extracted_text".
-                """
-                
-                response = client.chat.completions.create(
-                    model="meta-llama/llama-4-scout-17b-16e-instruct",
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": prompt
-                                },
-                                {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": f"data:image/jpeg;base64,{base64_image}"
-                                    }
-                                }
-                            ]
-                        }
-                    ]
+                image = cv2.imread(file_path)
+                orig_h, orig_w = image.shape[:2]
+
+                # 1. Advanced Resize/Scaling (Target width 1000px for lightning-fast OCR & highlights)
+                target_width = 1000
+                scale_factor = 1.0
+                if orig_w < target_width:
+                    scale_factor = target_width / orig_w
+                    width = int(orig_w * scale_factor)
+                    height = int(orig_h * scale_factor)
+                    image_resized = cv2.resize(image, (width, height), interpolation=cv2.INTER_CUBIC)
+                else:
+                    image_resized = image.copy()
+
+                # 2. Grayscale Conversion
+                gray = cv2.cvtColor(image_resized, cv2.COLOR_BGR2GRAY)
+
+                # 3. Bilateral Filtering Denoising (Keep text edges sharp, clean noise)
+                denoised = cv2.bilateralFilter(gray, 9, 75, 75)
+
+                # 4. Sharpening (Filters out scan blur and heightens text contrast)
+                sharpen_kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
+                sharpened = cv2.filter2D(denoised, -1, sharpen_kernel)
+
+                # 5. Gaussian Blur (Attenuates remaining high-frequency halftone/scanner noise)
+                blurred = cv2.GaussianBlur(sharpened, (3, 3), 0)
+
+                # 6. Adaptive Thresholding (Inverted for contours, standard for OCR)
+                thresh_inv = cv2.adaptiveThreshold(
+                    blurred,
+                    255,
+                    cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                    cv2.THRESH_BINARY_INV,
+                    15,
+                    10
                 )
-                response_text = response.choices[0].message.content
-                
-                # Clean JSON markdown blocks if present
-                if "```json" in response_text:
-                    response_text = response_text.split("```json")[1].split("```")[0].strip()
-                elif "```" in response_text:
-                    response_text = response_text.split("```")[1].split("```")[0].strip()
-                
-                try:
-                    # Parse with strict=False to tolerate literal newlines and control characters inside JSON strings
-                    data = json.loads(response_text, strict=False)
-                    raw_guidance = data.get("guidance", "Form uploaded successfully.")
-                    
-                    # Convert to string cleanly if LLM returned dictionary/list for guidance
-                    if isinstance(raw_guidance, (dict, list)):
-                        if isinstance(raw_guidance, list):
-                            guidance = "\n".join(str(item) for item in raw_guidance)
-                        else:
-                            guidance = json.dumps(raw_guidance, ensure_ascii=False, indent=2)
-                    else:
-                        guidance = str(raw_guidance)
-                        
-                    raw_extracted = data.get("extracted_text", "")
-                    # Convert to string cleanly if LLM returned dictionary/list
-                    if isinstance(raw_extracted, (dict, list)):
-                        extracted_text = json.dumps(raw_extracted, ensure_ascii=False, indent=2)
-                    else:
-                        extracted_text = str(raw_extracted)
-                except Exception as e_json:
-                    logger.warning(f"Failed to parse JSON directly from Groq: {e_json}. Using raw text as guidance.")
-                    guidance = str(response_text)
-                    extracted_text = "OCR Text processed via Groq Vision."
 
-            except Exception as e_groq:
-                logger.exception("Groq Vision API call failed")
-                raise Exception(f"Groq Vision processing failed: {str(e_groq)}")
+                processed_ocr = cv2.adaptiveThreshold(
+                    blurred,
+                    255,
+                    cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                    cv2.THRESH_BINARY,
+                    15,
+                    10
+                )
 
-        elif file.filename.lower().endswith(".pdf"):
-            extracted_text = "PDF uploaded"
-            guidance = "PDF forms processing not fully supported via Groq Vision currently. Please upload images."
+                # 7. Morphology Closing (Joins broken characters)
+                kernel_close = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+                processed_ocr = cv2.morphologyEx(processed_ocr, cv2.MORPH_CLOSE, kernel_close)
 
-        # Detect physical input boxes using OpenCV (extremely fast, runs in ~10ms!)
-        contour_boxes = []
-        try:
-            import cv2
-            image_cv = cv2.imread(file_path)
-            if image_cv is not None:
-                gray = cv2.cvtColor(image_cv, cv2.COLOR_BGR2GRAY)
-                # Binary inverse thresholding to highlight empty input box borders
-                _, thresh_inv = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
-                contours, _ = cv2.findContours(thresh_inv, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-                
-                raw_boxes = []
+                # 8. Run Tesseract OCR on processed image
+                # Dual PSM Engine Configurations: Merging PSM 6 (uniform block) and PSM 11 (sparse text labels)
+                config_psm6 = r'--oem 3 --psm 6'
+                config_psm11 = r'--oem 3 --psm 11'
+
+                data_psm6 = pytesseract.image_to_data(
+                    processed_ocr,
+                    config=config_psm6,
+                    output_type=pytesseract.Output.DICT
+                )
+
+                data_psm11 = pytesseract.image_to_data(
+                    processed_ocr,
+                    config=config_psm11,
+                    output_type=pytesseract.Output.DICT
+                )
+
+                seen_boxes = []  # Keep track of x, y, w, h in original coordinates to prevent duplicates
+                extracted_lines = []
+
+                def add_ocr_box(word_text, rx, ry, rw, rh, conf):
+                    word_clean = word_text.strip()
+                    if not word_clean or conf < 20:  # Kept lower confidence filter to catch small/faint text
+                        return
+
+                    # Map coordinates back to original image size
+                    x = int(rx / scale_factor)
+                    y = int(ry / scale_factor)
+                    w = int(rw / scale_factor)
+                    h = int(rh / scale_factor)
+
+                    # Overlap check
+                    is_duplicate = False
+                    for sx, sy, sw, sh in seen_boxes:
+                        if abs(x - sx) < 15 and abs(y - sy) < 15 and abs(w - sw) < 25 and abs(h - sh) < 25:
+                            is_duplicate = True
+                            break
+
+                    if not is_duplicate:
+                        ocr_boxes.append({
+                            "text": word_clean,
+                            "x": x,
+                            "y": y,
+                            "w": w,
+                            "h": h,
+                            "confidence": float(conf)
+                        })
+                        seen_boxes.append((x, y, w, h))
+                        extracted_lines.append(word_clean)
+
+                # Process Primary PSM 6
+                for i in range(len(data_psm6["text"])):
+                    add_ocr_box(
+                        data_psm6["text"][i],
+                        data_psm6["left"][i],
+                        data_psm6["top"][i],
+                        data_psm6["width"][i],
+                        data_psm6["height"][i],
+                        data_psm6["conf"][i]
+                    )
+
+                # Process Secondary PSM 11 to catch sparse missing labels
+                for i in range(len(data_psm11["text"])):
+                    add_ocr_box(
+                        data_psm11["text"][i],
+                        data_psm11["left"][i],
+                        data_psm11["top"][i],
+                        data_psm11["width"][i],
+                        data_psm11["height"][i],
+                        data_psm11["conf"][i]
+                    )
+
+                # 9. Contour Detection to Identify Physical Input Boxes & Underlines
+                contours, _ = cv2.findContours(thresh_inv, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                contour_boxes = []
                 for cnt in contours:
                     x, y, w, h = cv2.boundingRect(cnt)
                     aspect_ratio = float(w) / h
-                    # Filter for typical input field sizes
-                    if 25 < w < 800 and 12 < h < 80:
-                        if aspect_ratio > 1.1:
-                            raw_boxes.append((x, y, w, h))
-                
-                # De-duplicate nested or heavily overlapping bounding boxes
-                distinct_boxes = []
-                for x, y, w, h in raw_boxes:
-                    keep = True
-                    for dx, dy, dw, dh in distinct_boxes:
-                        if abs(x - dx) < 15 and abs(y - dy) < 15 and abs(w - dw) < 25 and abs(h - dh) < 25:
-                            keep = False
-                            break
-                    if keep:
-                        distinct_boxes.append((x, y, w, h))
-                
-                # Convert to standard OCR box format
-                for x, y, w, h in distinct_boxes:
-                    contour_boxes.append({
-                        "text": "Input Field",
-                        "x": int(x),
-                        "y": int(y),
-                        "w": int(w),
-                        "h": int(h),
+                    if 40 < w < 900 and 15 < h < 120:
+                        if aspect_ratio > 1.2:
+                            contour_boxes.append({"x": x, "y": y, "w": w, "h": h})
+
+                # Map contours to closest OCR label
+                detected_fields_count = len(contour_boxes)
+                for cb in contour_boxes:
+                    cx, cy, cw, ch = cb["x"], cb["y"], cb["w"], cb["h"]
+                    best_label = "Input Field"
+                    min_dist = 999999
+
+                    # Match against ocr_boxes
+                    for box in ocr_boxes:
+                        bx = box["x"] * scale_factor
+                        by = box["y"] * scale_factor
+                        # Text box to the left
+                        if bx < cx and (cx - bx) < 180 and abs(by - cy) < 40:
+                            dist = cx - bx
+                            if dist < min_dist:
+                                min_dist = dist
+                                best_label = box["text"]
+                        # Text box above
+                        elif by < cy and (cy - by) < 50 and abs(bx - cx) < 100:
+                            dist = cy - by
+                            if dist < min_dist:
+                                min_dist = dist
+                                best_label = box["text"]
+
+                    ox = int(cx / scale_factor)
+                    oy = int(cy / scale_factor)
+                    ow = int(cw / scale_factor)
+                    oh = int(ch / scale_factor)
+
+                    ocr_boxes.append({
+                        "text": f"[Field: {best_label}]",
+                        "x": ox,
+                        "y": oy,
+                        "w": ow,
+                        "h": oh,
                         "confidence": 95.0
                     })
-                
-                # Sort boxes by Y-coordinate (top to bottom)
-                contour_boxes.sort(key=lambda b: (b["y"], b["x"]))
-                logger.info(f"OpenCV Box Detection: Successfully found {len(contour_boxes)} input box contours.")
-        except Exception as e_cv:
-            logger.warning(f"Fast OpenCV contour box detection failed: {e_cv}")
+
+                extracted_text = "\n".join(extracted_lines)
+
+            except Exception as e:
+                logger.exception("OCR pipeline failed, falling back to Vision LLM")
+                extracted_text = ""
+                try:
+                    import base64
+                    with open(file_path, "rb") as image_file:
+                        base64_image = base64.b64encode(image_file.read()).decode("utf-8")
+
+                    vision_response = client.chat.completions.create(
+                        model="meta-llama/llama-4-scout-17b-16e-instruct",
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": "Explain this form in very simple step-by-step instructions for Indian people, rural users, and old-age users. Use simple English and short points."
+                                    },
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:image/jpeg;base64,{base64_image}"
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    )
+                    extracted_text = vision_response.choices[0].message.content
+                except Exception as e_vision:
+                    logger.exception("Vision fallback also failed")
+                    extracted_text = ""
+
+        elif file.filename.lower().endswith(".pdf"):
+            extracted_text = "PDF uploaded"
+
+        # 10. Generate Multilingual AI Guidance
+        if extracted_text.strip() == "":
+            guidance_text = "Unable to detect text clearly."
+        else:
+            guidance_text = generate_guidance(extracted_text, language)
 
         # Predict immediate URLs for instant response
         file_url = f"https://formsahayak-backend.onrender.com/uploads/{filename}"
         audio_url = f"https://formsahayak-backend.onrender.com/audio/{filename}.mp3"
         pdf_url = f"https://formsahayak-backend.onrender.com/pdfs/{filename}.pdf"
 
-        # Construct safe guidance steps for UI mapping compatibilities
+        # 12. Dynamic Highlights & Spoken Guidance Synchronization Mapping
         guidance_steps = []
-        raw_steps = [s.strip() for s in re.split(r'[\n\.]+', guidance) if s.strip()]
-        
-        # Filter raw steps into actual instructions and general headers/footers
-        guideline_steps = []
-        general_info_steps = []
-        for s in raw_steps:
-            # Numbered steps (starting with digit or step keyword) are actual guidelines
-            if re.match(r'^(step|\d+)', s.lower().strip()):
-                guideline_steps.append(s)
-            else:
-                general_info_steps.append(s)
-                
-        # 1. Add leading general info
-        for step_text in general_info_steps:
-            guidance_steps.append({
-                "step_index": len(guidance_steps) + 1,
-                "step_text": step_text,
-                "matched_fields": ["General"],
-                "ocr_boxes": []
-            })
-            
-        # 2. Map numbered instructions to sorted physical input boxes
-        for i, step_text in enumerate(guideline_steps):
+        raw_steps = [s.strip() for s in re.split(r'[\n\.]+', guidance_text) if s.strip()]
+        for idx, step in enumerate(raw_steps):
+            parentheses_terms = re.findall(r'\(([^)]+)\)', step)
             matched_boxes = []
-            if i < len(contour_boxes):
-                matched_boxes.append(contour_boxes[i])
+            for term in parentheses_terms:
+                term_clean = term.strip().lower()
                 
+                # 1. Primary: Exact match to specific field or exact label
+                exact_matches = []
+                for box in ocr_boxes:
+                    box_text = box["text"].lower()
+                    if box_text == f"[field: {term_clean}]" or box_text == term_clean:
+                        exact_matches.append(box)
+                        
+                if exact_matches:
+                    matched_boxes.extend(exact_matches)
+                else:
+                    # 2. Secondary fallback: Substring mapping but ignoring unrelated fields
+                    for box in ocr_boxes:
+                        box_text = box["text"].lower()
+                        # If it's a field box, ensure it doesn't belong to a different specific field
+                        if "[field:" in box_text and f"[field: {term_clean}]" not in box_text:
+                            continue
+                        if term_clean in box_text or box_text in term_clean or (term_clean == "phone" and "mobile" in box_text) or (term_clean == "dob" and "date" in box_text):
+                            matched_boxes.append(box)
+
+            # Keyword matching fallback
+            if not matched_boxes:
+                common_keywords = ["name", "email", "phone", "mobile", "address", "dob", "date", "signature", "account", "age"]
+                step_lower = step.lower()
+                for kw in common_keywords:
+                    if kw in step_lower:
+                        for box in ocr_boxes:
+                            box_text = box["text"].lower()
+                            # Avoid over-highlighting other fields (e.g. Father's Name when kw is name)
+                            if "[field:" in box_text and f"[field: {kw}]" not in box_text:
+                                continue
+                            if kw in box_text or (kw == "phone" and "mobile" in box_text) or (kw == "dob" and "date" in box_text):
+                                matched_boxes.append(box)
+
+            # De-duplicate matched boxes
+            unique_matches = []
+            seen_match = set()
+            for box in matched_boxes:
+                box_key = (box["x"], box["y"], box["w"], box["h"])
+                if box_key not in seen_match:
+                    seen_match.add(box_key)
+                    unique_matches.append(box)
+
             guidance_steps.append({
-                "step_index": len(guidance_steps) + 1,
-                "step_text": step_text,
-                "matched_fields": ["Input Box"],
-                "ocr_boxes": matched_boxes
+                "step_index": idx + 1,
+                "step_text": step,
+                "matched_fields": parentheses_terms if parentheses_terms else ["General"],
+                "ocr_boxes": unique_matches
             })
 
         # Save record to database
@@ -660,7 +774,7 @@ async def upload_document(
             file_name=filename,
             file_path=file_url,
             extracted_text=extracted_text,
-            guidance_text=guidance,
+            guidance_text=guidance_text,
             audio_path=audio_url,
             pdf_path=pdf_url,
             created_at=current_time
@@ -669,25 +783,36 @@ async def upload_document(
         db.commit()
         db.close()
 
-        # Add media compilation tasks to BackgroundTasks
+        # Add media compilation tasks to BackgroundTasks (completely async voice/PDF generation)
         background_tasks.add_task(
             generate_media_background,
             filename=filename,
             file_path=file_path,
-            guidance_text=guidance,
+            guidance_text=guidance_text,
             extracted_text=extracted_text,
             language=language if language else 'English'
         )
 
+        # Print backend debug verification logs exactly as required
+        logger.info(f"OCR BOXES DETECTED: {len(ocr_boxes)}")
+        logger.info(f"LANGUAGE RECEIVED: {language}")
+        logger.info(f"OCR TEXT LENGTH: {len(extracted_text)}")
+        logger.info(f"DETECTED CONTOURS COUNT: {detected_fields_count}")
+
+        print(f"OCR BOXES DETECTED: {len(ocr_boxes)}")
+        print("OCR BOXES:", len(ocr_boxes))
+        print(f"LANGUAGE RECEIVED: {language}")
+        print(f"OCR TEXT LENGTH: {len(extracted_text)}")
+
         return {
             "message": "Uploaded & processed successfully",
-            "guidance": guidance,
-            "guidance_text": guidance,
+            "guidance": guidance_text,
+            "guidance_text": guidance_text,
             "audio_file": audio_url,
             "audio_path": audio_url,
             "pdf_file": pdf_url,
             "pdf_path": pdf_url,
-            "ocr_boxes": contour_boxes,
+            "ocr_boxes": ocr_boxes,
             "extracted_text": extracted_text,
             "uploaded_image_path": file_url,
             "guidance_steps": guidance_steps
@@ -920,6 +1045,69 @@ def change_password(data: ChangePasswordRequest):
     }
 
 
+# ---------------- SHARED OTP MAIL HELPER ----------------
+
+def send_otp_email_helper(email: str, otp: str):
+    import os
+    import requests
+    
+    brevo_api_key = os.getenv("BREVO_API_KEY", "").strip().strip("'\"")
+    resend_api_key = os.getenv("RESEND_API_KEY", "").strip().strip("'\"")
+    
+    sender_email = os.getenv("SENDER_EMAIL", EMAIL_ADDRESS)
+    
+    if brevo_api_key:
+        logger.info(f"Attempting to send OTP via Brevo. Receiver: {email}")
+        logger.info(f"Brevo API key length: {len(brevo_api_key)}")
+        logger.info(f"Brevo API key starts with: {brevo_api_key[:7] if len(brevo_api_key) >= 7 else brevo_api_key}...")
+        
+        url = "https://api.brevo.com/v3/smtp/email"
+        payload = {
+            "sender": {"name": "Formsahayak", "email": sender_email},
+            "to": [{"email": email}],
+            "subject": "Reset Password OTP",
+            "htmlContent": f"<p>Your password reset OTP is <strong>{otp}</strong>. It is valid for 10 minutes.</p>"
+        }
+        headers = {
+            "api-key": brevo_api_key,
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+        response = requests.post(url, headers=headers, json=payload, timeout=15)
+        
+        if response.status_code not in (200, 201):
+            logger.error(f"Brevo API error response: {response.text}")
+            raise Exception(f"Brevo API failed with status {response.status_code}: {response.text}")
+            
+        logger.info("Brevo API email sent successfully!")
+        
+    else:
+        api_key_to_use = resend_api_key if resend_api_key else "re_your_api_key_here"
+        logger.info(f"Attempting to send OTP via Resend. Receiver: {email}")
+        logger.info(f"Resend API key length: {len(api_key_to_use)}")
+        logger.info(f"Resend API key starts with: {api_key_to_use[:7] if len(api_key_to_use) >= 7 else api_key_to_use}...")
+        
+        response = requests.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {api_key_to_use}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "from": "Formsahayak <onboarding@resend.dev>",
+                "to": [email],
+                "subject": "Reset Password OTP",
+                "html": f"<p>Your password reset OTP is <strong>{otp}</strong>. It is valid for 10 minutes.</p>"
+            },
+            timeout=15
+        )
+        
+        if response.status_code != 200:
+            logger.error(f"Resend API error response: {response.text}")
+            raise Exception(f"Resend API failed with status {response.status_code}: {response.text}")
+
+        logger.info("Resend API email sent successfully!")
+
 # ---------------- FORGOT PASSWORD API ----------------
 
 @app.post("/forgot-password")
@@ -931,30 +1119,27 @@ def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db
             detail="Email address not found. Please register first."
         )
     
+    otp = str(random.randint(1000, 9999))
+    otp_storage[request.email] = otp
+    
     try:
-        temp_pass = "".join(random.choices(string.ascii_letters + string.digits, k=8))
-        user.password = temp_pass # Plain text to align with the database's existing login and signup schema
-        db.commit()
+        send_otp_email_helper(request.email, otp)
         return {
             "status": "success",
-            "message": f"A temporary password has been successfully generated for {request.email}. (Demo Password: {temp_pass})"
+            "message": "OTP sent successfully"
         }
     except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Error resetting password: {str(e)}")
-
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error sending OTP: {str(e)}"
+        )
 
 # ---------------- SEND OTP API ----------------
 
 @app.post("/send-otp")
 def send_otp(data: ForgotPasswordRequest):
-
     db = SessionLocal()
-
-    user = db.query(User).filter(
-        User.email == data.email
-    ).first()
-
+    user = db.query(User).filter(User.email == data.email).first()
     db.close()
 
     if not user:
@@ -964,80 +1149,18 @@ def send_otp(data: ForgotPasswordRequest):
         )
 
     otp = str(random.randint(1000, 9999))
-
     otp_storage[data.email] = otp
 
     try:
-        import os
-        import requests
-        
-        brevo_api_key = os.getenv("BREVO_API_KEY", "").strip().strip("'\"")
-        resend_api_key = os.getenv("RESEND_API_KEY", "").strip().strip("'\"")
-        
-        sender_email = os.getenv("SENDER_EMAIL", EMAIL_ADDRESS)
-        
-        if brevo_api_key:
-            logger.info(f"Attempting to send OTP via Brevo. Receiver: {data.email}")
-            logger.info(f"Brevo API key length: {len(brevo_api_key)}")
-            logger.info(f"Brevo API key starts with: {brevo_api_key[:7] if len(brevo_api_key) >= 7 else brevo_api_key}...")
-            
-            url = "https://api.brevo.com/v3/smtp/email"
-            payload = {
-                "sender": {"name": "Formsahayak", "email": sender_email},
-                "to": [{"email": data.email}],
-                "subject": "Reset Password OTP",
-                "htmlContent": f"<p>Your password reset OTP is <strong>{otp}</strong>. It is valid for 10 minutes.</p>"
-            }
-            headers = {
-                "api-key": brevo_api_key,
-                "Content-Type": "application/json",
-                "Accept": "application/json"
-            }
-            response = requests.post(url, headers=headers, json=payload, timeout=15)
-            
-            if response.status_code not in (200, 201):
-                logger.error(f"Brevo API error response: {response.text}")
-                raise Exception(f"Brevo API failed with status {response.status_code}: {response.text}")
-                
-            logger.info("Brevo API email sent successfully!")
-            
-        else:
-            api_key_to_use = resend_api_key if resend_api_key else "re_your_api_key_here"
-            logger.info(f"Attempting to send OTP via Resend. Receiver: {data.email}")
-            logger.info(f"Resend API key length: {len(api_key_to_use)}")
-            logger.info(f"Resend API key starts with: {api_key_to_use[:7] if len(api_key_to_use) >= 7 else api_key_to_use}...")
-            
-            response = requests.post(
-                "https://api.resend.com/emails",
-                headers={
-                    "Authorization": f"Bearer {api_key_to_use}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "from": "Formsahayak <onboarding@resend.dev>",
-                    "to": [data.email],
-                    "subject": "Reset Password OTP",
-                    "html": f"<p>Your password reset OTP is <strong>{otp}</strong>. It is valid for 10 minutes.</p>"
-                },
-                timeout=15
-            )
-            
-            if response.status_code != 200:
-                logger.error(f"Resend API error response: {response.text}")
-                raise Exception(f"Resend API failed with status {response.status_code}: {response.text}")
-
-            logger.info("Resend API email sent successfully!")
-
+        send_otp_email_helper(data.email, otp)
+        return {
+            "message": "OTP sent successfully"
+        }
     except Exception as e:
-        logger.exception("Send OTP execution failed")
         raise HTTPException(
             status_code=500,
             detail=str(e)
         )
-
-    return {
-        "message": "OTP sent successfully"
-    }
 
 
 # ---------------- VERIFY OTP API ----------------
