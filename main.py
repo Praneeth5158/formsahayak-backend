@@ -1,12 +1,14 @@
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 import shutil
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, BackgroundTasks, Depends
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, BackgroundTasks, Depends, Security
 import io
 import json
 import string
 from sqlalchemy.orm import Session
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from gtts import gTTS
 from pydantic import BaseModel, EmailStr
 from typing import Optional
@@ -15,6 +17,7 @@ from db import SessionLocal
 from models import Document, User, Feedback
 import pytesseract
 import os
+import jwt
 if os.name == 'nt':
     pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 import cv2
@@ -23,10 +26,11 @@ import re
 import time
 from dotenv import load_dotenv
 from groq import Groq
-from datetime import datetime
+from datetime import datetime, timedelta
 from pytz import timezone
 import random
 import smtplib
+
 from email.mime.text import MIMEText
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
@@ -47,6 +51,46 @@ if not GROQ_API_KEY:
     raise Exception("GROQ_API_KEY not found")
 
 client = Groq(api_key=GROQ_API_KEY)
+
+# Admin Dashboard Environment Configuration
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
+JWT_SECRET = os.getenv("JWT_SECRET")
+JWT_ALGORITHM = "HS256"
+
+if not ADMIN_EMAIL or not ADMIN_PASSWORD or not JWT_SECRET:
+    logger.warning("Admin Dashboard environment variables (ADMIN_EMAIL, ADMIN_PASSWORD, JWT_SECRET) are not fully configured!")
+
+def create_admin_token(email: str) -> str:
+    expire = datetime.utcnow() + timedelta(hours=12)
+    payload = {
+        "sub": email,
+        "role": "admin",
+        "exp": expire
+    }
+    encoded_jwt = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    return encoded_jwt
+
+security_scheme = HTTPBearer()
+
+def get_current_admin(credentials: HTTPAuthorizationCredentials = Security(security_scheme)):
+    if not JWT_SECRET:
+        raise HTTPException(
+            status_code=500,
+            detail="JWT_SECRET is not configured on the server."
+        )
+    token = credentials.credentials
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        role = payload.get("role")
+        if role != "admin":
+            raise HTTPException(status_code=403, detail="Forbidden: Admin role required")
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired")
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
 
 # Database Session Dependency
 def get_db():
@@ -109,10 +153,13 @@ PDF_FOLDER = "pdfs"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(AUDIO_FOLDER, exist_ok=True)
 os.makedirs(PDF_FOLDER, exist_ok=True)
+os.makedirs(os.path.join("static", "admin"), exist_ok=True)
 
 app.mount("/audio", StaticFiles(directory="audio"), name="audio")
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 app.mount("/pdfs", StaticFiles(directory="pdfs"), name="pdfs")
+app.mount("/admin-static", StaticFiles(directory="static/admin"), name="admin-static")
+
 
 # ---------------- OTP STORAGE ----------------
 
@@ -1251,3 +1298,167 @@ def delete_history(doc_id: int):
         "message": "History deleted successfully"
          
     }
+
+
+# ---------------- ADMIN ENDPOINTS ----------------
+
+class AdminLoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+@app.post("/api/admin/login")
+def admin_login(data: AdminLoginRequest):
+    if not ADMIN_EMAIL or not ADMIN_PASSWORD or not JWT_SECRET:
+        raise HTTPException(
+            status_code=500,
+            detail="Admin configuration is missing on server"
+        )
+    if data.email != ADMIN_EMAIL or data.password != ADMIN_PASSWORD:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid admin credentials"
+        )
+    
+    token = create_admin_token(data.email)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "role": "admin"
+    }
+
+@app.get("/api/admin/stats")
+def get_admin_stats(current_admin: dict = Depends(get_current_admin)):
+    db = SessionLocal()
+    try:
+        total_users = db.query(User).count()
+        total_forms = db.query(Document).count()
+        total_ocr_scans = db.query(Document).filter(
+            Document.extracted_text != None,
+            Document.extracted_text != ""
+        ).count()
+        total_feedback = db.query(Feedback).count()
+        active_users = db.query(Document.user_email).distinct().count()
+        
+        # Get upload trends for the last 30 days
+        # Group by day
+        from sqlalchemy import func
+        trends = db.query(
+            func.date(Document.created_at).label("upload_date"),
+            func.count(Document.id).label("upload_count")
+        ).group_by(
+            func.date(Document.created_at)
+        ).order_by(
+            "upload_date"
+        ).limit(30).all()
+        
+        upload_dates = [str(t.upload_date) for t in trends]
+        upload_counts = [int(t.upload_count) for t in trends]
+        
+        return {
+            "total_users": total_users,
+            "total_forms": total_forms,
+            "total_ocr_scans": total_ocr_scans,
+            "total_feedback": total_feedback,
+            "active_users": active_users,
+            "analytics": {
+                "upload_dates": upload_dates,
+                "upload_counts": upload_counts
+            }
+        }
+    except Exception as e:
+        logger.exception("Failed to fetch admin stats")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+@app.get("/api/admin/users")
+def get_admin_users(
+    query: Optional[str] = None,
+    current_admin: dict = Depends(get_current_admin)
+):
+    db = SessionLocal()
+    try:
+        q = db.query(User)
+        if query:
+            q = q.filter(
+                (User.name.like(f"%{query}%")) | 
+                (User.email.like(f"%{query}%"))
+            )
+        users = q.order_by(User.id.desc()).all()
+        
+        result = []
+        for user in users:
+            profile_image_url = ""
+            if user.profile_image:
+                profile_image_url = f"https://formsahayak-backend.onrender.com/{user.profile_image.replace(chr(92), '/')}"
+            result.append({
+                "id": user.id,
+                "name": user.name,
+                "email": user.email,
+                "phone": user.phone,
+                "language": user.language,
+                "profile_image": profile_image_url
+            })
+        return {"users": result}
+    except Exception as e:
+        logger.exception("Failed to fetch admin users")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+@app.get("/api/admin/forms")
+def get_admin_forms(current_admin: dict = Depends(get_current_admin)):
+    db = SessionLocal()
+    try:
+        docs = db.query(Document).order_by(Document.id.desc()).all()
+        result = []
+        for doc in docs:
+            result.append({
+                "id": doc.id,
+                "user_email": doc.user_email,
+                "file_name": doc.file_name,
+                "file_url": doc.file_path,
+                "extracted_text": doc.extracted_text,
+                "guidance_text": doc.guidance_text,
+                "audio_path": doc.audio_path,
+                "pdf_path": doc.pdf_path,
+                "created_at": str(doc.created_at)
+            })
+        return {"forms": result}
+    except Exception as e:
+        logger.exception("Failed to fetch admin forms")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+@app.get("/api/admin/feedback")
+def get_admin_feedback(current_admin: dict = Depends(get_current_admin)):
+    db = SessionLocal()
+    try:
+        feedbacks = db.query(Feedback).order_by(Feedback.id.desc()).all()
+        result = []
+        for fb in feedbacks:
+            result.append({
+                "id": fb.id,
+                "user_email": fb.user_email,
+                "app_experience": fb.app_experience,
+                "voice_guidance_helpful": fb.voice_guidance_helpful,
+                "recommend_app": fb.recommend_app,
+                "additional_comments": fb.additional_comments,
+                "rating": fb.rating,
+                "feedback_text": fb.feedback_text,
+                "created_at": str(fb.created_at)
+            })
+        return {"feedback": result}
+    except Exception as e:
+        logger.exception("Failed to fetch admin feedback")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+@app.get("/admin", response_class=HTMLResponse)
+def serve_admin_dashboard():
+    html_path = os.path.join("static", "admin", "index.html")
+    if not os.path.exists(html_path):
+        raise HTTPException(status_code=404, detail="Admin Dashboard UI not found")
+    return FileResponse(html_path)

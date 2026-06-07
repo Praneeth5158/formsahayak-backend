@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FormSahayak - Admin Dashboard</title>
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- FontAwesome for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- ChartJS for trends -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- CSS stylesheet -->
+    <link rel="stylesheet" href="/admin-static/style.css">
+</head>
+<body>
+    <!-- Glow Background Effects -->
+    <div class="background-glow glow-1"></div>
+    <div class="background-glow glow-2"></div>
+
+    <!-- Login Container -->
+    <div id="login-container" class="login-wrapper">
+        <div class="login-card glass-panel">
+            <div class="login-header">
+                <i class="fa-solid fa-user-shield admin-shield-icon"></i>
+                <h2>FormSahayak Admin</h2>
+                <p>Sign in to access your administrative dashboard</p>
+            </div>
+            <form id="login-form">
+                <div class="form-group">
+                    <label for="admin-email"><i class="fa-regular fa-envelope"></i> Email Address</label>
+                    <input type="email" id="admin-email" placeholder="admin@example.com" required autocomplete="email">
+                </div>
+                <div class="form-group">
+                    <label for="admin-password"><i class="fa-solid fa-lock"></i> Password</label>
+                    <input type="password" id="admin-password" placeholder="••••••••" required autocomplete="current-password">
+                </div>
+                <div id="login-error" class="error-message hide">
+                    <i class="fa-solid fa-circle-exclamation"></i> <span id="error-text">Invalid login credentials</span>
+                </div>
+                <button type="submit" class="btn btn-primary btn-block">
+                    <span>Login</span> <i class="fa-solid fa-arrow-right-to-bracket"></i>
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Main Dashboard Container -->
+    <div id="dashboard-container" class="dashboard-wrapper hide">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar glass-panel">
+            <div class="sidebar-brand">
+                <i class="fa-solid fa-circle-nodes brand-logo"></i>
+                <div class="brand-text">
+                    <h3>FormSahayak</h3>
+                    <span>Admin Panel</span>
+                </div>
+            </div>
+
+            <nav class="sidebar-nav">
+                <ul>
+                    <li>
+                        <a href="#" class="nav-link active" data-tab="overview">
+                            <i class="fa-solid fa-chart-pie"></i>
+                            <span>Overview</span>
+                        </a>
+                    </li>
+                    <li>
+                        <a href="#" class="nav-link" data-tab="users">
+                            <i class="fa-solid fa-users"></i>
+                            <span>User Profiles</span>
+                        </a>
+                    </li>
+                    <li>
+                        <a href="#" class="nav-link" data-tab="forms">
+                            <i class="fa-solid fa-file-invoice"></i>
+                            <span>Form & OCR Logs</span>
+                        </a>
+                    </li>
+                    <li>
+                        <a href="#" class="nav-link" data-tab="feedback">
+                            <i class="fa-solid fa-comments"></i>
+                            <span>Feedback</span>
+                        </a>
+                    </li>
+                </ul>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="admin-profile">
+                    <div class="admin-avatar">
+                        <i class="fa-solid fa-shield"></i>
+                    </div>
+                    <div class="admin-info">
+                        <h4 id="admin-name">Admin</h4>
+                        <span>Active Session</span>
+                    </div>
+                </div>
+                <button id="logout-btn" class="btn btn-logout">
+                    <i class="fa-solid fa-power-off"></i> <span>Sign Out</span>
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <!-- Header bar -->
+            <header class="content-header glass-panel">
+                <div class="header-title">
+                    <h1 id="tab-title">Overview</h1>
+                    <p id="tab-subtitle">Dashboard statistics and system analytics</p>
+                </div>
+                <div class="header-actions">
+                    <div class="time-display">
+                        <i class="fa-regular fa-clock"></i>
+                        <span id="current-time">--:--:--</span>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Tab Panels -->
+            <div class="tab-panels-container">
+                <!-- Panel: Overview -->
+                <section id="panel-overview" class="tab-panel active">
+                    <!-- Statistics Grid -->
+                    <div class="stats-grid">
+                        <div class="stat-card glass-panel">
+                            <div class="stat-icon icon-users">
+                                <i class="fa-solid fa-users"></i>
+                            </div>
+                            <div class="stat-details">
+                                <h3>Total Users</h3>
+                                <span class="stat-value" id="stat-total-users">0</span>
+                            </div>
+                            <div class="stat-indicator glow-users"></div>
+                        </div>
+
+                        <div class="stat-card glass-panel">
+                            <div class="stat-icon icon-forms">
+                                <i class="fa-solid fa-file-lines"></i>
+                            </div>
+                            <div class="stat-details">
+                                <h3>Uploaded Forms</h3>
+                                <span class="stat-value" id="stat-total-forms">0</span>
+                            </div>
+                            <div class="stat-indicator glow-forms"></div>
+                        </div>
+
+                        <div class="stat-card glass-panel">
+                            <div class="stat-icon icon-ocr">
+                                <i class="fa-solid fa-microscope"></i>
+                            </div>
+                            <div class="stat-details">
+                                <h3>OCR Scans</h3>
+                                <span class="stat-value" id="stat-total-ocr">0</span>
+                            </div>
+                            <div class="stat-indicator glow-ocr"></div>
+                        </div>
+
+                        <div class="stat-card glass-panel">
+                            <div class="stat-icon icon-feedback">
+                                <i class="fa-solid fa-comments"></i>
+                            </div>
+                            <div class="stat-details">
+                                <h3>Feedback Logs</h3>
+                                <span class="stat-value" id="stat-total-feedback">0</span>
+                            </div>
+                            <div class="stat-indicator glow-feedback"></div>
+                        </div>
+
+                        <div class="stat-card glass-panel">
+                            <div class="stat-icon icon-active">
+                                <i class="fa-solid fa-user-clock"></i>
+                            </div>
+                            <div class="stat-details">
+                                <h3>Active Users</h3>
+                                <span class="stat-value" id="stat-active-users">0</span>
+                            </div>
+                            <div class="stat-indicator glow-active"></div>
+                        </div>
+                    </div>
+
+                    <!-- Analytics Section -->
+                    <div class="analytics-row">
+                        <div class="analytics-card glass-panel chart-full-width">
+                            <div class="card-header">
+                                <h3><i class="fa-solid fa-chart-line"></i> Form Uploads Trend</h3>
+                                <span class="badge">Last 30 Days</span>
+                            </div>
+                            <div class="chart-container">
+                                <canvas id="uploads-trend-chart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Panel: User Profiles -->
+                <section id="panel-users" class="tab-panel">
+                    <div class="panel-header-actions glass-panel">
+                        <div class="search-box">
+                            <i class="fa-solid fa-magnifying-glass search-icon"></i>
+                            <input type="text" id="user-search-input" placeholder="Search users by name or email...">
+                        </div>
+                    </div>
+
+                    <div class="table-container glass-panel">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Avatar</th>
+                                    <th>Name</th>
+                                    <th>Email</th>
+                                    <th>Phone</th>
+                                    <th>Preferred Language</th>
+                                </tr>
+                            </thead>
+                            <tbody id="users-table-body">
+                                <!-- Dynamic rows -->
+                                <tr>
+                                    <td colspan="5" class="loading-state">
+                                        <i class="fa-solid fa-circle-notch fa-spin"></i> Loading users...
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <!-- Panel: Form & OCR Logs -->
+                <section id="panel-forms" class="tab-panel">
+                    <div class="table-container glass-panel">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>User Email</th>
+                                    <th>File Name</th>
+                                    <th>Uploaded At</th>
+                                    <th>OCR Status</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="forms-table-body">
+                                <!-- Dynamic rows -->
+                                <tr>
+                                    <td colspan="6" class="loading-state">
+                                        <i class="fa-solid fa-circle-notch fa-spin"></i> Loading uploaded forms...
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <!-- Panel: Feedback -->
+                <section id="panel-feedback" class="tab-panel">
+                    <div class="feedback-grid" id="feedback-cards-container">
+                        <!-- Dynamic cards -->
+                        <div class="loading-state">
+                            <i class="fa-solid fa-circle-notch fa-spin"></i> Loading feedback...
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <!-- Form Details Modal -->
+    <div id="form-details-modal" class="modal-overlay hide">
+        <div class="modal-content glass-panel">
+            <div class="modal-header">
+                <h2><i class="fa-solid fa-file-invoice"></i> Form Details</h2>
+                <button class="btn-close-modal" id="close-modal-btn"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body">
+                <div class="modal-info-grid">
+                    <div class="info-card">
+                        <label>User Email</label>
+                        <span id="modal-user-email">email@example.com</span>
+                    </div>
+                    <div class="info-card">
+                        <label>File Name</label>
+                        <span id="modal-file-name">filename.jpg</span>
+                    </div>
+                    <div class="info-card">
+                        <label>Date Uploaded</label>
+                        <span id="modal-uploaded-at">2026-06-07</span>
+                    </div>
+                </div>
+
+                <div class="modal-media-row">
+                    <div class="media-preview glass-panel">
+                        <h3>Uploaded Form Image</h3>
+                        <div class="image-wrapper" id="modal-image-wrapper">
+                            <img id="modal-form-image" src="" alt="Form Preview">
+                        </div>
+                    </div>
+                    <div class="media-audio-pdf glass-panel">
+                        <h3>Output Assets</h3>
+                        <div class="asset-links">
+                            <div class="asset-item">
+                                <label>Audio Guidance MP3</label>
+                                <audio id="modal-audio-player" controls></audio>
+                            </div>
+                            <div class="asset-item">
+                                <label>Report PDF</label>
+                                <a id="modal-pdf-link" href="#" target="_blank" class="btn btn-secondary">
+                                    <i class="fa-solid fa-file-pdf"></i> Download PDF
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="modal-text-sections">
+                    <div class="text-section glass-panel">
+                        <h3>Extracted Text (OCR)</h3>
+                        <pre id="modal-extracted-text">No text extracted.</pre>
+                    </div>
+                    <div class="text-section glass-panel">
+                        <h3>AI Guidance Generated</h3>
+                        <div id="modal-guidance-text" class="guidance-content">No guidance available.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- JS Logic -->
+    <script src="/admin-static/app.js"></script>
+</body>
+</html>
