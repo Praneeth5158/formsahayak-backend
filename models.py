@@ -69,6 +69,22 @@ class Feedback(Base):
         server_default=func.now()
     )
 
+# ---------------- DEVELOPER DETAILS TABLE ----------------
+
+class DeveloperDetails(Base):
+    __tablename__ = "developer_details"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=True)
+    father_name = Column(String(100), nullable=True)
+    role = Column(String(255), nullable=True)
+    description = Column(Text, nullable=True)
+    email = Column(String(100), nullable=True)
+    github = Column(String(255), nullable=True)
+    linkedin = Column(String(255), nullable=True)
+    portfolio = Column(String(255), nullable=True)
+    profile_image = Column(Text, nullable=True)
+
 # Create all tables automatically
 
 Base.metadata.create_all(bind=engine)

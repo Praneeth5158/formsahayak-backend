@@ -14,7 +14,7 @@ from pydantic import BaseModel, EmailStr
 from typing import Optional
 from PIL import Image as PILImage
 from db import SessionLocal
-from models import Document, User, Feedback
+from models import Document, User, Feedback, DeveloperDetails
 import pytesseract
 import os
 import jwt
@@ -1461,4 +1461,85 @@ def serve_admin_dashboard():
     html_path = os.path.join("static", "admin", "index.html")
     if not os.path.exists(html_path):
         raise HTTPException(status_code=404, detail="Admin Dashboard UI not found")
-    return FileResponse(html_path)
+    return FileResponse(html_path)
+
+@app.get("/api/developer")
+def get_developer_details(db: Session = Depends(get_db)):
+    details = db.query(DeveloperDetails).first()
+    if not details:
+        return {
+            "name": "Yamanuri Praneeth",
+            "father_name": "s/o Yamanuri Ramesh",
+            "role": "Developer & Creator of FormSahayak",
+            "description": "Computer Science Engineering student passionate about AI, Mobile Application Development, and solving real-world problems through technology.",
+            "email": "praneethyamanuri@gmail.com",
+            "github": "https://github.com/Praneeth5158",
+            "linkedin": "https://www.linkedin.com/in/yamanuri-praneeth/",
+            "portfolio": "https://praneeth5158.github.io/My-Portfolio/",
+            "profile_image": ""
+        }
+    
+    profile_image_url = ""
+    if details.profile_image:
+        profile_image_url = f"https://formsahayak-backend.onrender.com/{details.profile_image.replace(chr(92), '/')}"
+
+    return {
+        "name": details.name,
+        "father_name": details.father_name,
+        "role": details.role,
+        "description": details.description,
+        "email": details.email,
+        "github": details.github,
+        "linkedin": details.linkedin,
+        "portfolio": details.portfolio,
+        "profile_image": profile_image_url
+    }
+
+@app.post("/api/admin/developer")
+async def update_developer_details(
+    name: str = Form(...),
+    father_name: str = Form(...),
+    role: str = Form(...),
+    description: str = Form(...),
+    email: str = Form(...),
+    github: str = Form(...),
+    linkedin: str = Form(...),
+    portfolio: str = Form(...),
+    profile_image: UploadFile = File(None),
+    current_admin: dict = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    details = db.query(DeveloperDetails).first()
+    if not details:
+        details = DeveloperDetails()
+        db.add(details)
+
+    image_path = details.profile_image
+
+    if profile_image:
+        filename = f"dev_{int(time.time())}_{profile_image.filename}"
+        save_path = os.path.join(UPLOAD_FOLDER, filename)
+        with open(save_path, "wb") as buffer:
+            shutil.copyfileobj(profile_image.file, buffer)
+        image_path = save_path
+
+    details.name = name
+    details.father_name = father_name
+    details.role = role
+    details.description = description
+    details.email = email
+    details.github = github
+    details.linkedin = linkedin
+    details.portfolio = portfolio
+    details.profile_image = image_path
+
+    db.commit()
+
+    profile_image_url = ""
+    if image_path:
+        profile_image_url = f"https://formsahayak-backend.onrender.com/{image_path.replace(chr(92), '/')}"
+
+    return {
+        "message": "Developer details updated successfully",
+        "profile_image": profile_image_url
+    }
