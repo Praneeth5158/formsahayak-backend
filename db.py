@@ -54,6 +54,7 @@ else:
             ssl_context.verify_mode = ssl.CERT_NONE
             connect_args["ssl"] = ssl_context
     print("DATABASE_URL =", DATABASE_URL)
+    print("CONNECT_ARGS =", connect_args)
     engine = create_engine(DATABASE_URL, connect_args=connect_args)
 
 SessionLocal = sessionmaker(
