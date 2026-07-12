@@ -22,8 +22,8 @@ else:
             DATABASE_URL = f"mysql+pymysql://{mysql_user}:{mysql_password}@{mysql_host}:{mysql_port}/{mysql_db}"
             
     # Fallback to the default Railway URL if still not set
-    if not DATABASE_URL:
-        DATABASE_URL = "mysql+pymysql://root:TpNHXpAmCzHPlBSZCdKhpDzHukyUSfYK@kodama.proxy.rlwy.net:57775/railway"
+    # if not DATABASE_URL:
+    #     DATABASE_URL = "mysql+pymysql://root:TpNHXpAmCzHPlBSZCdKhpDzHukyUSfYK@kodama.proxy.rlwy.net:57775/railway"
     
     # Normalize mysql:// protocol to mysql+pymysql:// if needed
     if DATABASE_URL.startswith("mysql://"):
